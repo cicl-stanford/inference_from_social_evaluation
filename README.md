@@ -21,9 +21,6 @@ Humans have a remarkable ability to infer the hidden causes of things. From phys
 │   └── experiment3c
 ├── docs
 │   ├── R
-│   ├── experiment1
-│   ├── experiment2a
-│   └── experiment2b
 └── figures
     ├── experiment1
     ├── experiment2a
