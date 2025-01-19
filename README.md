@@ -1,6 +1,6 @@
 # Inference from social evaluation
 
-This repository contains the experiments, data, analyses, and figures for the paper "Inference from social evaluation" by Zachary J. Davis, Kelsey R. Allen, Max Kleiman-Weiner, Julian Jara-Ettinger, and Tobias Gerstenberg (2025, _Journal of Personality and Social Psychology_).
+This repository contains the experiments, data, analyses, and figures for the paper ["Inference from social evaluation"](https://osf.io/preprints/psyarxiv/h9c5w?view_only=) by Zachary J. Davis, Kelsey R. Allen, Max Kleiman-Weiner, Julian Jara-Ettinger, and Tobias Gerstenberg (2025, _Journal of Personality and Social Psychology_).
 
 __Contents__:
 
