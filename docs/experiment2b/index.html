@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+  <head>
+        <title> Psychology Experiment </title>
+
+        <link rel="stylesheet" href='css/jspsych.css' />
+        <link rel="stylesheet" href='css/jquery-ui.min.css' />
+
+        <script src='js/jquery.min.js'></script>
+        <script src='js/jquery-ui.min.js'></script>
+        <script src='https://proliferate.alps.science/static/js/proliferate.js'></script>
+
+        <script src='js/jspsych.js'></script>
+        <script src='js/jspsych-instructions-custom.js'></script>
+        <script src='js/jspsych-html-button-response-custom.js'></script>
+        <script src='js/jspsych-html-slider-response-custom.js'></script>
+        <script src='js/utils.js'></script>
+        <script src='js/jspsych-image-button-response.js'></script>
+        <script src='js/jspsych-survey-multi-choice-custom.js'></script>
+        <script src='js/jspsych-survey-html-form.js'></script>
+        <script src='js/trial_info.js'></script>
+    </head>
+  <body></body>
+  <script>
+
+    var testing = false;
+
+    /* Experiment timeline */
+    var timeline = [];
+    /* Instructions timeline */
+    var loop_timeline = [];
+
+    // display welcome screen
+    var welcome = {
+        type: 'html-button-response',
+        stimulus: '<p><b>Consent Form</b></p> <div style="text-align:left;' +
+            'background-color:lightblue; padding:20px; max-width:900px;">' +
+            '<p><b>Description:</b> Welcome! You are invited to participate ' +
+            'in a research study in cognitive psychology. You will be asked ' +
+            'to perform various tasks on a computer which may include: looking ' +
+            'at images or videos, listening to sounds, reading scenarios, or ' +
+            'playing games. You may be asked a number of different questions ' +
+            'about making judgments and intepreting people’s actions. All ' +
+            'information collected will remain confidential. <p>' +
+            '<p><b>Risks and benefits:</b> Risks involved in this study are ' +
+            'the same as those normally associated with using a computer ' +
+            '(e.g., mild eye/arm strain). If you have any pre-existing ' +
+            'conditions that might make reading and completing a computer-' +
+            'based survey strenuous for you, you should probably elect to ' +
+            'not participate in this study. If at any time during the study ' +
+            'you feel unable to participate because you are experiencing strain, ' +
+            'you may end your participation without penalty. We cannot and do ' +
+            'not guarantee or promise that you will receive any benefits from ' +
+            'this study. Your decision whether or not to participate in this ' +
+            'study will not affect your employment, medical care, and/or grades ' +
+            'in school. </p>' +
+            '<p><b>Time involvement:</b> Your participation in this experiment ' +
+            'will take 15 minutes. </p>' +
+            '<p><b> Payment: </b> If recruitment materials indicate payment ' +
+            '(e.g., Amazon or other recruitment), you will receive compensation ' +
+            'as indicated. </p>' +
+            "<p><b>Subject's rights: </b> If you have read this notice and have " +
+            'decided to participate in this project, please understand your ' +
+            'participation is voluntary and you have the right to withdraw ' +
+            'your consent or discontinue participation at any time without ' +
+            'penalty or loss of benefits to which you are otherwise entitled. ' +
+            'You have the right to refuse to answer particular questions. Your ' +
+            'individual privacy will be maintained in all published and written ' +
+            'data resulting from the study. </p>' +
+            '<p><b>Contact information: </b> If you have any questions, concerns ' +
+            'or complaints about this research study, its procedures, or risks ' +
+            'and benefits, you should ask the Protocol Director, (Professor ' +
+            'Tobias Gerstenberg, Phone: (650) 725-2431; Email: ' +
+            'gerstenberg@stanford.edu). </p>' +
+            '<p><b>Independent contact: </b>I f you are not satisfied with how ' +
+            'this study is being conducted, or if you have any concerns, ' +
+            'complaints, or general questions about the research or your ' +
+            'rights as a participant, please contact the Stanford Institutional ' +
+            'Review Board (IRB) to speak to someone independent of the research ' +
+            'team via email at irb2-manager@lists.stanford.edu, or via phone ' +
+            'at (650) 723-2480 or toll free at 1-866-680-2906. You can also ' +
+            'write to the Stanford IRB, Stanford University, 3000 El Camino ' +
+            'Real, Five Palo Alto Square, 4th Floor, Palo Alto, CA 94306. </p>' +
+            '<p>You may want to print a copy of this consent form to keep. By ' +
+            'clicking the button below, you acknowledge that you have read ' +
+            'the above information, that you are 18 years of age, or older ' +
+            'and give your consent to participate in our internet-based study ' +
+            'and consent for us to analyze the resulting data. </p> </div>' +
+            '<p> Do you agree with the terms of the experiment as explained ' +
+            'above? </p>',
+        choices: ['I agree']
+    }
+    timeline.push(welcome);
+
+    /* define instructions trial */
+    var instructions = {
+        type: "instructions",
+        pages: ["<img src = " + instructions_images[0]["img"] + " style='width:400px'></img>" +
+                "<p>In this experiment, you will see short stories about people who work together in the same office.</p>",
+
+                "<img src = " + instructions_images[1]["img"] + " style='width:400px'></img>" +
+                "<p>Sometimes, an employee goes straight to work from their home.</p>",
+
+                "<img src = " + instructions_images[2]["img"] + " style='width:400px'></img>" +
+                "<p>Other times, they pick up a coffee for their coworker before coming in to work.</p>",
+
+                "<img src = " + instructions_images[3]["img"] + " style='width:400px'></img>" +
+                "<p>Sometimes there is traffic on their way, as shown by the red blocks.<br> <br> Traveling through a red high-traffic block takes <b>three times</b> as long as going through a blue block.</p>",
+
+                "<img src = " + instructions_images[4]["img"] + " style='width:400px'></img>" +
+                "<p>Sometimes the coffee shop will be along the employee's way to work.<br>In that case, it <b>doesn't take them any extra time or effort</b> to pick up the coffee.</p>",
+
+                "<img src = " + instructions_images[5]["img"] + " style='width:400px'></img>" +
+                "<p>Other times, the employee would need to go far out of their way to pick up the coffee for their colleague.<br>Here, picking up the coffee for their colleague instead of going straight to the office, <b>would take a lot of additional time and effort</b>.</p>",
+
+                "<img src = " + instructions_images[3]["img"] + " style='width:400px'></img>" +
+                "<p>We will now show you a number of cases in which someone picked up a coffee for their coworker instead of going straight to work, like in the example above.</p>",
+                ],
+        on_load: set_slider(),
+        show_clickable_nav: true,
+    };
+    if (!testing) {loop_timeline.push(instructions)};
+
+    //----------------------------COMPREHENSION CHECK----------------------------//
+    var options_tf = ['True', 'False'];
+
+    var comprehension_qs = {
+        type: 'survey-multi-choice',
+        questions: [
+            {
+                prompt: "<div class='flex-container'> <div class='flex-child'> <b>Path 1</b> <br> <img src = " + instructions_images[6]["img"] + " style='width:300px'></img></div> <div class='flex-child'> <b>Path 2</b> <br> <img src = " + instructions_images[7]["img"] + " style='width:300px'></img></div></div><br>Which path takes longer?",
+                options: ['Path 1', 'Path 2'],
+                horizontal: false
+            },
+            {
+                prompt: 'How much longer does it take to go through a red cell compared to a blue cell?',
+                options: ['2 times as long', '3 times as long', '5 times as long'],
+                horizontal: false
+            }
+        ],
+        preamble: 'Please answer a few comprehension questions so we know that you ' +
+            'understand the setup of the game.',
+        on_finish: function(data){
+            // jspsych records responses as json strings
+            data.correct = (data.responses == '{"Q0":"Path 1","Q1":"3 times as long"}');
+        }
+    }
+    loop_timeline.push(comprehension_qs);
+
+    var fail_comprehension = {
+        timeline: [{
+            type: 'html-button-response',
+            stimulus: 'Unfortunately, you missed some of the comprehension ' +
+                'questions.</p> <p> Please review the instructions again.',
+            choices: ['Review'],
+        }],
+        conditional_function: function(){
+            var data = jsPsych.data.get().last(1).values()[0];
+            return !(data.correct);
+        }
+    }
+    loop_timeline.push(fail_comprehension);
+
+    //----------------------------EXPERIMENT----------------------------//
+    var loop_node = {
+        timeline: loop_timeline,
+        loop_function: function(data){
+            var data = jsPsych.data.get().last(1).values()[0];
+            return !(data.correct);
+        }
+    }
+    timeline.push(loop_node);
+
+    timeline.push({
+        type: 'html-button-response',
+        stimulus: '<div style="width:50%; min-width:300px; margin:auto;' +
+            ' min-height:300px; display:flex; align-items:flex-end;">' +
+            '<p>Great job! Now we will show you some situations, and your ' +
+            'task will be to judge <b>how much praise</b> that person ' +
+            'deserves for picking up the coffee. <br> </div>',
+        choices: ['Continue'],
+    });
+
+    // random US baby names
+    var shuffled_names = jsPsych.randomization.repeat(names, 1);
+    var name_ct = 0;
+
+    var praise_gen = {
+        // timeline_variables: praise_gen_maps,
+        type: 'image-button-response',
+        timeline: [
+            {
+                type: 'survey-multi-choice',
+                questions: [
+                {
+                    prompt: "<img src = " + praise_gen_maps[0]['img'] + " style='width:300px'></img><br>How much praise does " + shuffled_names[name_ct]['name'] + " deserve for picking up a coffee for " + shuffled_names[name_ct+1]['name'] + "?",
+                    options: ['low', 'medium', 'high'],
+                    horizontal: false
+                }
+                ]
+            }
+        ],
+        choices: ['Continue']
+    }
+    timeline.push(praise_gen);
+    name_ct = name_ct + 2;
+
+    var praise_gen2 = {
+        // timeline_variables: praise_gen_maps,
+        type: 'image-button-response',
+        timeline: [
+            {
+                type: 'survey-multi-choice',
+                questions: [
+                {
+                    prompt: "<img src = " + praise_gen_maps[1]['img'] + " style='width:300px'></img><br>How much praise does " + shuffled_names[name_ct]['name'] + " deserve for picking up a coffee for " + shuffled_names[name_ct+1]['name'] + "?",
+                    options: ['low', 'medium', 'high'],
+                    horizontal: false
+                }
+                ]
+            }
+        ],
+        choices: ['Continue']
+    }
+    timeline.push(praise_gen2);
+    name_ct = name_ct + 2;
+
+    var praise_gen3 = {
+        // timeline_variables: praise_gen_maps,
+        type: 'image-button-response',
+        timeline: [
+            {
+                type: 'survey-multi-choice',
+                questions: [
+                {
+                    prompt: "<img src = " + praise_gen_maps[2]['img'] + " style='width:300px'></img><br>How much praise does " + shuffled_names[name_ct]['name'] + " deserve for picking up a coffee for " + shuffled_names[name_ct+1]['name'] + "?",
+                    options: ['low', 'medium', 'high'],
+                    horizontal: false
+                }
+                ]
+            }
+        ],
+        choices: ['Continue']
+    }
+    timeline.push(praise_gen3) 
+    name_ct = name_ct + 2;   
+
+    timeline.push({
+        type: 'html-button-response',
+        stimulus: '<div style="width:50%; min-width:300px; margin:auto;' +
+            ' min-height:300px; display:flex; align-items:flex-end;">' +
+            '<p>Well done so far! From now on, you will do a slightly different ' +
+            'task. <br><br>You will learn how much praise one person gave another for ' +
+            'picking up a coffee. Just like in the first task you did, the ' +
+            'praise can either be low, medium, or high. Based on this ' +
+            'information, your task is to <b>figure out what happened</b>. ' +
+            'You will see two different maps, and you\'ll have to guess ' +
+            'which of the two best matches the praise judgment.<br> </div>',
+        choices: ['Start'],
+    });
+
+    // shuffling test trials
+    var shuffled_coffee_maps = jsPsych.randomization.repeat(coffee_maps, 1);
+    var shuffled_coffee_maps = coffee_maps;
+    // var shuffled_coffee_maps = shuffled_coffee_maps.slice(0,3);
+
+    /* Test trials */
+    var test_trials = {
+        timeline_variables: shuffled_coffee_maps,
+        type: 'image-button-response',
+        timeline: [
+            {
+                type: 'html-slider-response',
+                stimulus: function() {
+                    trial = jsPsych.timelineVariable('trial', true);
+                    praise = jsPsych.timelineVariable('praise', true);
+
+                    // randomizing map order
+                    map1 = jsPsych.timelineVariable('map1_img', true);
+                    map2 = jsPsych.timelineVariable('map2_img', true);
+                    map_order = Math.floor(Math.random() * 2);
+                    if (map_order === 0) {
+                        left_map = map1;
+                        right_map = map2;
+                    } else {
+                        left_map = map2;
+                        right_map = map1;
+                    }
+
+                    var html = "<div class='flex-container' style='width:820px; margin-left:auto; margin-right:auto'> <div class='flex-child'> <b>Path 1</b> <br> <img src = " 
+                    + left_map + 
+                    " style='width:300px'></img></div> <div class='flex-child'> <b>Path 2</b> <br> <img src = "
+                     + right_map + 
+                     " style='width:300px'></img></div></div><br>Person1 gave Person2 <span style='color:darkgreen; font-weight:bold'>" + praise + "</span> praise for picking up the coffee. Which path do you think Person2 took? <br> <br>"
+
+                    // inserting random names
+                    Person1 = shuffled_names[name_ct];
+                    Person2 = shuffled_names[name_ct+1];
+                    html = html.replace(/Person1/g, Person1['name']);
+                    html = html.replace(/Person2/g, Person2['name']);
+                    name_ct = name_ct + 2;
+                    
+                    return html;
+                },
+                labels: ['definitely Path 1', 'unsure', 'definitely Path 2'],
+                slider_width: 420,
+                on_finish: function(data) {
+                    data.trial = trial;
+                    data.left_map = left_map;
+                    data.right_map = right_map;
+                    data.map_order = map_order;
+                    data.praise = praise;
+                    data.coffee_getter = Person1['gender'];
+                    data.recipient = Person2['gender'];
+
+                    var prog = jsPsych.getProgressBarCompleted();
+                    jsPsych.setProgressBar(prog + 0.027);
+                }
+            }
+        ],
+        choices: ['Continue']
+    };
+    timeline.push(test_trials);
+
+    // feedback form
+        timeline.push({
+            type: 'survey-html-form',
+            html: '<div style="max-width:700px; text-align:center;">' +
+                '<p> What factors influenced how you decided to respond? Do you have any' +
+                ' questions or comments regarding the experiment? </p> <textarea name=' +
+                ' "feedback" cols="40" rows="6" "autofocus"></textarea>' +
+                '<p> Please provide the following demographic information to complete the ' +
+                ' study. </p> <div style="text-align:center;' +
+                ' padding:20px;"> <div style="text-align:left; display:inline-block;' +
+                ' margin-right:20px; line-height:1.8em;"> <ol>' +
+                '<li>Native language:</li> <li>Age:</li> <li>Gender:</li> <li>Race:</li>' +
+                '<li>Ethnicity</li> </ol> </div> <div style="text-align:left; display:' +
+                ' inline-block; line-height:1.8em;"> <input name="language" type="text"' +
+                ' /> <br> <input name="age" type="text" /> <br> <input name="gender"' +
+                ' type="text" /> <br> <input name="race" type="text" /> <br> <input name=' +
+                ' "ethnicity" type="radio" id="hisp" value="Hispanic" /> <label for="hisp">' +
+                ' Hispanic </label> <input name="ethnicity" type="radio" id="nonhisp" value=' +
+                ' "Non-Hispanic" /> <label for="nonhisp"> Non-Hispanic </label> </div> </div>' +
+                '<p> Please press the finish button to complete the experiment. </p> </div>',
+            button_label: 'Finish',
+            data: {'trial': 'end'},
+            /*on_finish: function() {
+                jsPsych.setProgressBar(1.0);
+            }*/
+        });
+
+    /* start the experiment */
+    jsPsych.init({
+            timeline: timeline,
+            preload_images: all_images,
+            experiment_width: 1000,
+            show_progress_bar: true,
+            auto_update_progress_bar: false,
+            on_finish: function() {
+                // var instructions_queries = jsPsych.data.get().filter([
+                //     {trial_type: 'survey-multi-choice'},
+                // ]);
+                // var instrs = instructions_queries.values();
+
+                // // record comprehension check
+                // var instrs_store = [];
+                // for (var j = 0; j < instrs.length - 1; j++) {
+                //     var temp = {};
+                //     temp['pass_comprehension'] = instrs[i]['correct'];
+                //     instrs_store.push(temp);
+                // }
+
+                var data = jsPsych.data.get().filter([
+                    {trial_type: 'html-slider-response'},
+                    {trial_type: 'survey-html-form'},
+                    {trial_type: 'survey-multi-choice'},
+                ]);
+                var values = data.values();
+
+                // record inferences
+                var trials = [];
+                for (var i = 0; i < values.length - 1; i++) {
+                    var temp = {};
+                    temp['trial'] = values[i]['trial'];
+                    temp['left_map'] = values[i]['left_map'];
+                    temp['right_map'] = values[i]['right_map'];
+                    temp['map_order'] = values[i]['map_order'];
+                    temp['coffee_getter'] = values[i]['coffee_getter'];
+                    temp['recipient'] = values[i]['recipient'];
+                    temp['praise'] = values[i]['praise'];
+                    temp['p_right'] = values[i]['responses'];
+                    trials.push(temp);
+                }
+
+                // parse demographics json string and construct dict
+                var demographics = JSON.parse(values[values.length-1]['responses']);
+                if (typeof demographics.ethnicity == "undefined") {
+                    demographics.ethnicity = "";
+                }
+                var participant_info = {
+                    "feedback": demographics.feedback,
+                    "language": demographics.language,
+                    "age": demographics.age,
+                    "race": demographics.race,
+                    "ethnicity": demographics.ethnicity,
+                    "time": values[values.length-1]['time_elapsed']
+                };
+
+                proliferate.submit({
+                    "trials": trials,
+                    "participants": participant_info
+                });
+                $('#jspsych-content').html('<div style="margin: auto;"> <p> Thank you for' +
+                    ' participating in this experiment! </p> <p> Redirecting you back to' +
+                    ' Prolific... </p>');
+                setTimeout(function(){}, 400);
+            }
+        });
+  </script>
+</html>

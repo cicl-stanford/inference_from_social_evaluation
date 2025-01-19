@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+  <head>
+        <title> Psychology Experiment </title>
+
+        <link rel="stylesheet" href='css/jspsych.css' />
+        <link rel="stylesheet" href='css/jquery-ui.min.css' />
+
+        <script src='js/jquery.min.js'></script>
+        <script src='js/jquery-ui.min.js'></script>
+        <script src='https://proliferate.alps.science/static/js/proliferate.js'></script>
+
+        <script src='js/jspsych.js'></script>
+        <script src='js/jspsych-instructions-custom.js'></script>
+        <script src='js/jspsych-html-button-response-custom.js'></script>
+        <script src='js/jspsych-html-slider-response-custom.js'></script>
+        <script src='js/utils.js'></script>
+        <script src='js/jspsych-image-button-response.js'></script>
+        <script src='js/jspsych-survey-multi-choice-custom.js'></script>
+        <script src='js/jspsych-survey-html-form.js'></script>
+        <script src='js/trial_info.js'></script>
+    </head>
+  <body></body>
+  <script>
+
+    /* create timeline */
+    var timeline = [];
+
+    // number of trials + attention check
+    var num_trials = scenarios.length + 1
+
+    // display welcome screen
+    var welcome = {
+        type: 'html-button-response',
+        stimulus: '<p><b>Consent Form</b></p> <div style="text-align:left;' +
+            'background-color:lightblue; padding:20px; max-width:900px;">' +
+            '<p><b>Description:</b> Welcome! You are invited to participate ' +
+            'in a research study in cognitive psychology. You will be asked ' +
+            'to perform various tasks on a computer which may include: looking ' +
+            'at images or videos, listening to sounds, reading scenarios, or ' +
+            'playing games. You may be asked a number of different questions ' +
+            'about making judgments and intepreting people’s actions. All ' +
+            'information collected will remain confidential. <p>' +
+            '<p><b>Risks and benefits:</b> Risks involved in this study are ' +
+            'the same as those normally associated with using a computer ' +
+            '(e.g., mild eye/arm strain). If you have any pre-existing ' +
+            'conditions that might make reading and completing a computer-' +
+            'based survey strenuous for you, you should probably elect to ' +
+            'not participate in this study. If at any time during the study ' +
+            'you feel unable to participate because you are experiencing strain, ' +
+            'you may end your participation without penalty. We cannot and do ' +
+            'not guarantee or promise that you will receive any benefits from ' +
+            'this study. Your decision whether or not to participate in this ' +
+            'study will not affect your employment, medical care, and/or grades ' +
+            'in school. </p>' +
+            '<p><b>Time involvement:</b> Your participation in this experiment ' +
+            'will take 15 minutes. </p>' +
+            '<p><b> Payment: </b> If recruitment materials indicate payment ' +
+            '(e.g., Amazon or other recruitment), you will receive compensation ' +
+            'as indicated. </p>' +
+            "<p><b>Subject's rights: </b> If you have read this notice and have " +
+            'decided to participate in this project, please understand your ' +
+            'participation is voluntary and you have the right to withdraw ' +
+            'your consent or discontinue participation at any time without ' +
+            'penalty or loss of benefits to which you are otherwise entitled. ' +
+            'You have the right to refuse to answer particular questions. Your ' +
+            'individual privacy will be maintained in all published and written ' +
+            'data resulting from the study. </p>' +
+            '<p><b>Contact information: </b> If you have any questions, concerns ' +
+            'or complaints about this research study, its procedures, or risks ' +
+            'and benefits, you should ask the Protocol Director, (Professor ' +
+            'Tobias Gerstenberg, Phone: (650) 725-2431; Email: ' +
+            'gerstenberg@stanford.edu). </p>' +
+            '<p><b>Independent contact: </b>I f you are not satisfied with how ' +
+            'this study is being conducted, or if you have any concerns, ' +
+            'complaints, or general questions about the research or your ' +
+            'rights as a participant, please contact the Stanford Institutional ' +
+            'Review Board (IRB) to speak to someone independent of the research ' +
+            'team via email at irb2-manager@lists.stanford.edu, or via phone ' +
+            'at (650) 723-2480 or toll free at 1-866-680-2906. You can also ' +
+            'write to the Stanford IRB, Stanford University, 3000 El Camino ' +
+            'Real, Five Palo Alto Square, 4th Floor, Palo Alto, CA 94306. </p>' +
+            '<p>You may want to print a copy of this consent form to keep. By ' +
+            'clicking the button below, you acknowledge that you have read ' +
+            'the above information, that you are 18 years of age, or older ' +
+            'and give your consent to participate in our internet-based study ' +
+            'and consent for us to analyze the resulting data. </p> </div>' +
+            '<p> Do you agree with the terms of the experiment as explained ' +
+            'above? </p>',
+        choices: ['I agree']
+    }
+    timeline.push(welcome);
+
+    var instructions = {
+      type: "html-button-response",
+      stimulus: '<div style="width:50%; min-width:300px; margin:auto;' +
+                ' min-height:300px; display:flex; align-items:flex-end;">' +
+                '<p> In this experiment, you will read a few stories.' +
+                ' For each story, you will be asked to figure out a missing piece of information' +
+                ' <br> <br>' +
+                ' Click the start button whenever you are ready. <br> </div>',
+      choices: ['Start.'],
+    };
+    timeline.push(instructions);
+
+    // picking names for agents and iterating down the list
+    var shuffled_names = jsPsych.randomization.repeat(names, 1);
+    var name_ct = 0;
+    // initializing variables within the trials
+    var requester = 'requester';
+    var helper1 = 'helper1';
+    var helper2 = 'helper2';
+    var query = 999;
+    var trial_num = 999;
+    var trial_type = 'placeholder'
+
+    /* randomizing scenarios and inserting attention check */
+    var shuffled_scenarios = jsPsych.randomization.repeat(scenarios, 1);
+    shuffled_scenarios.splice(7, 0, attention_check);
+
+    /* test trials */
+    var trial = {
+      timeline_variables: shuffled_scenarios,
+      type: "html-button-response",
+      timeline: [ {stimulus: function() {
+                // getting new names for each trial
+                requester = shuffled_names[name_ct];
+                helper1 = shuffled_names[name_ct+1];
+                helper2 = shuffled_names[name_ct+2];
+
+                // getting which query to ask
+                query = jsPsych.randomization.sampleWithReplacement([0,1], 1)[0];
+
+                // stuff to save
+                trial_num = jsPsych.timelineVariable('trial', true);
+                trial_type = jsPsych.timelineVariable('type', true);
+
+                var html = 
+                '<img src="' + jsPsych.timelineVariable('image', true) + '" style="max-width:200px"></img>' +
+                // story
+                '<p>' + jsPsych.timelineVariable('prompt', true) + '</p>' + 
+                // always give agent 1 more blame (leaving open the possibility of sampling more/less in the future)
+                '<p>' + jsPsych.timelineVariable('blame_assignments', true)[0] + '</p>' + 
+                // sample question
+                '<p>' + jsPsych.timelineVariable('query', true)[query] + '</p>';
+                html = html.replace(/__requester__/g, '<span style=\"color:#E65100\">' + requester['name'] + '</span>');
+                html = html.replace(/__firsthelper__/g, '<span style=\"color:#1976D2\">' + helper1['name'] + '</span>');
+                html = html.replace(/__secondhelper__/g, '<span style=\"color:#388E3C\">' + helper2['name'] + '</span>');
+                html = html.replace(/__subjective__/g, pronouns[requester['gender']]['subjective']);
+                html = html.replace(/__objective__/g, pronouns[requester['gender']]['objective']);
+                html = html.replace(/__possessive__/g, pronouns[requester['gender']]['possessive']);
+                html = html.replace(/__reflexive__/g, pronouns[requester['gender']]['reflexive']);
+                html = html.replace(/__firsthelperpossessive__/g, pronouns[helper1['gender']]['possessive']); //dealing with one case
+                name_ct = name_ct + 3;
+                return html;
+              },
+              choices: function() { 
+                return ['<span style=\"color:#1976D2\">' + helper1['name'] + '</span>', '<span style=\"color:#388E3C\">' + helper2['name'] + '</span>'];
+              }
+          }],
+          randomize_order: false,
+          on_finish: function(data) {
+            data.trial_num = trial_num;
+            data.trial_type = trial_type;
+            data.requester = requester;
+            data.helper1 = helper1;
+            data.helper2 = helper2;
+            data.query = query;
+          var prog = jsPsych.getProgressBarCompleted();
+          jsPsych.setProgressBar(prog + 0.0625);
+        }
+    };
+    timeline.push(trial);
+
+    // feedback form
+    timeline.push({
+        type: 'survey-html-form',
+        html: '<div style="max-width:700px; text-align:center;">' +
+            '<p> What factors influenced how you decided to respond? Do you have any' +
+            ' questions or comments regarding the experiment? </p> <textarea name=' +
+            ' "feedback" cols="40" rows="6" "autofocus"></textarea>' +
+            '<p> Please provide the following demographic information to complete the ' +
+            ' study. </p> <div style="text-align:center;' +
+            ' padding:20px;"> <div style="text-align:left; display:inline-block;' +
+            ' margin-right:20px; line-height:1.8em;"> <ol>' +
+            '<li>Native language:</li> <li>Age:</li> <li>Gender:</li> <li>Race:</li>' +
+            '<li>Ethnicity</li> </ol> </div> <div style="text-align:left; display:' +
+            ' inline-block; line-height:1.8em;"> <input name="language" type="text"' +
+            ' /> <br> <input name="age" type="text" /> <br> <input name="gender"' +
+            ' type="text" /> <br> <input name="race" type="text" /> <br> <input name=' +
+            ' "ethnicity" type="radio" id="hisp" value="Hispanic" /> <label for="hisp">' +
+            ' Hispanic </label> <input name="ethnicity" type="radio" id="nonhisp" value=' +
+            ' "Non-Hispanic" /> <label for="nonhisp"> Non-Hispanic </label> </div> </div>' +
+            '<p> Please press the finish button to complete the experiment. </p> </div>',
+        button_label: 'Finish',
+        data: {'trial': 'end'},
+    });
+
+    /* start the experiment */
+    jsPsych.init({
+            timeline: timeline,
+            preload_images: all_images,
+            show_progress_bar: true,
+            auto_update_progress_bar: false,
+            on_finish: function() {
+                var data = jsPsych.data.get();
+                var values = data.values();
+                
+                // construct trials data
+                var trials = [];
+                for (var i = 0; i < values.length; i++) {
+                    var temp = {};
+                    temp['trial_index'] = values[i]['trial_index'];
+                    temp['trial_num'] = values[i]['trial_num'];
+                    temp['trial_type'] = values[i]['trial_type'];
+                    
+                    temp['requester'] = values[i]['requester'];
+                    temp['helper1'] = values[i]['helper1'];
+                    temp['helper2'] = values[i]['helper2'];
+                    temp['query'] = values[i]['query'];
+                    temp['response'] = values[i]['button_pressed'];
+                    temp['stimulus'] = values[i]['stimulus'];
+
+                    trials.push(temp);
+                }
+                
+                // parse demographics and construct participant data
+                var participant = JSON.parse(values[values.length-1]['responses']);
+                if (typeof participant.ethnicity == "undefined") {
+                    participant.ethnicity = "";
+                }
+                var participant_info = {
+                    "feedback": participant.feedback,
+                    "age": participant.age,
+                    "gender": participant.gender,
+                    "race": participant.race,
+                    "ethnicity": participant.ethnicity,
+                    "time": values[values.length-1]['time_elapsed']
+                };
+
+                proliferate.submit({
+                    "trials": trials,
+                    "participants": participant_info
+                });
+
+                $('#jspsych-content').css('margin-top', 'auto');
+                $('#jspsych-content').html('<div style="margin: auto;"> <p>' +
+                    ' Thank you for participating in this experiment! </p>' +
+                    '<p> Redirecting you back to Prolific... </p>');
+                setTimeout(function(){}, 300);
+            }
+        });
+  </script>
+</html>

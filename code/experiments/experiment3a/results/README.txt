@@ -1,0 +1,1 @@
+Both files have the same data, but the "Clean" file has extra columns with the agents' strength and the number of trees blocking the road.

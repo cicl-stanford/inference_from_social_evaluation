@@ -1,0 +1,3135 @@
+---
+title: "Inference from social evaluation"
+author: "Tobias Gerstenberg"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+---
+
+# Load packages
+
+```{r, message=F, warning=FALSE}
+library("knitr")       # for knitting
+library("janitor")     # for cleaning variable names
+library("corrr")       # for correlations
+library("ggtext")      # for text in ggplots
+library("kableExtra")  # for knitr tables
+library("lubridate")   # for dealing with dates
+library("brms")        # for bayesian regression
+library("RSQLite")     # for reading in db files
+library("tidyjson")    # for parsing json files
+library("DT")          # tables in Rmarkdown
+library("grid")        # functions for dealing with images
+library("xtable")      # for latex tables
+library("png")         # adding pngs to images
+library("egg")         # for geom_custom
+library("patchwork")   # for making figure panels
+library("modelr")      # for bootstrapping
+library("rsample")     # for bootstrapping
+library("lme4")        # for linear mixed effects models
+library("broom.mixed") # for cleaning up mixed effects models
+library("Hmisc")       # for bootstrapping
+library("tidybayes")   # for Bayesian regression modeling
+library("emmeans")     # for marginal effects
+library("ggeffects")   # for marginal effects
+library("scales")      # for rescaling
+library("emojifont")   # for awesome font 
+library("boot")        # for inv.logit
+library("tidyverse")   # for everything else
+```
+
+# Helper functions
+
+```{r}
+theme_set(theme_classic() +
+              theme(text = element_text(size = 24)))
+
+opts_chunk$set(comment = "",
+               fig.show = "hold")
+
+options(dplyr.summarise.inform = F)
+
+# root mean squared error
+fun.rmse = function(x, y){
+    return(sqrt(mean((x - y)^2)))
+}
+
+# function for printing out html or latex tables
+fun.print_table = function(data, format = "html", digits = 2){
+    if(format == "html"){
+        data %>%
+            kable(digits = digits) %>%
+            kable_styling()
+    }else if(format == "latex"){
+        data %>%
+            xtable(digits = digits) %>%
+            print(include.rownames = F,
+                  booktabs = T)
+    }
+}
+
+# softmax function
+fun.softmax = function(x, beta = 1){
+    return(exp(beta * x)/sum(exp(beta * x)))
+}
+
+```
+
+# EXP 1: Scenarios
+
+## DATA
+
+### Read in data
+
+```{r, message=FALSE}
+df.exp1.long = bind_rows(
+    read_csv("../../data/experiment1/experiment1-trials.csv"), 
+    read_csv("../../data/experiment1/experiment1-trials2.csv")) %>%
+    filter(!is.na(trial_num)) %>%
+    select(-c(proliferate.condition, stimulus, error)) %>%
+    mutate(across(.cols = c("helper1", "helper2", "requester"),
+                  .fns = ~ ifelse(str_detect(., "female"), "female", "male"))) %>%
+    # effort was reverse coded, the high blame was query 1 instead of zero
+    mutate(query = ifelse(trial_type == 'effort', 1 - query, query)) %>%
+    mutate(predicted = ifelse(query == response, 1, 0))
+
+# number of excluded participants
+df.exp1.long %>%
+    filter(trial_num == 'attention_check', response == 1) %>%
+    nrow()
+
+# update scenario index
+df.scenario_index = tibble(trial_num = 1:15,
+                           trial = c(1:3, 7:9, 13:15, 10:12, 4:6),
+                           question = rep(c("ability", "knowledge", "social_role",
+                                    "intention", "effort"), each = 3),
+                           scenario = c("tire", "couch", "shelf",
+                                        "airpot", "picnic", "cooking",
+                                        "birthday", "mover", "acting",
+                                        "soccer", "lunch", "invite",
+                                        "tug_of_war", "presentation", "call"))
+
+# exclude attention check from data
+df.exp1.long = df.exp1.long %>%
+    filter(trial_num != "attention_check") %>%
+    mutate(trial_num = as.numeric(trial_num),
+           trial_index = trial_index - 1) %>%
+    left_join(df.scenario_index,
+              by = "trial_num") %>%
+    select(participant = workerid,
+           trial,
+           question,
+           scenario,
+           order = trial_index,
+           predicted,
+           response) %>%
+    arrange(participant, trial)
+```
+
+### Demographics
+
+```{r, message=FALSE}
+df.exp1.demographics = bind_rows(
+  read_csv("../../data/experiment1/experiment1-participants.csv"),
+  read_csv("../../data/experiment1/experiment1-participants2.csv"))
+
+df.exp1.demographics %>%
+    count(gender) %>%
+    fun.print_table()
+
+df.exp1.demographics %>%
+    count(race) %>%
+    fun.print_table()
+
+df.exp1.demographics %>%
+    summarise(age_mean = mean(age),
+              age_sd = sd(age),
+              time_mean    = mean(time/(1000*60)), # converting from ms to minutes
+              time_sd  = sd(time/(1000*60))) %>%
+    fun.print_table()
+```
+
+## STATS
+
+### Overall model fit
+
+```{r}
+fit.exp1.overall = brm(formula = predicted ~ 1 + (1 | participant) + 
+                           (1 | question / scenario),
+               data = df.exp1.long,
+               family = "bernoulli",
+               seed = 1,
+               cores = 4,
+               file = "cache/fit.exp1.overall",
+               control = list(adapt_delta = 0.95))
+
+fit.exp1.overall
+
+fit.exp1.overall %>%
+    tidy() %>%
+    select(-c(component)) %>%
+    fun.print_table()
+```
+
+### Effect of scenario
+
+```{r}
+fit.exp1.scenario = brm(formula = predicted ~ 1 + scenario + (1 | participant),
+                        data = df.exp1.long,
+                        family = "bernoulli",
+                        seed = 1,
+                        cores = 4,
+                        file = "cache/fit.exp1.scenario")
+
+fit.exp1.scenario %>%
+    emmeans(~ scenario,
+            type = "response") %>%
+    summary(point.est = "mean") %>%
+    left_join(df.scenario_index %>%
+                  select(trial, question, scenario),
+              by = "scenario") %>%
+    arrange(trial) %>%
+    relocate(trial, question) %>%
+    fun.print_table()
+```
+
+### Post-hoc power analysis 
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+set.seed(1)
+
+df.params = fit.exp1.overall %>% 
+    tidy() %>% 
+    select(effect, parameter = group, estimate) %>% 
+    replace_na(list(parameter = "intercept")) %>% 
+    select(-effect) %>% 
+    mutate(parameter = str_replace(parameter, ":", "_")) %>% 
+    pivot_wider(names_from = parameter,
+                values_from = estimate)
+
+nsample = c(5:10, seq(15, 50, 5))
+nsimulations = 50
+
+df.exp1.power = df.exp1.long %>% 
+    distinct(question, scenario) %>% 
+    nest() %>% 
+    expand_grid(nsample, nsimulations = 1:nsimulations) %>% 
+    mutate(data = map2(.x = data,
+                       .y = nsample,
+                       .f = ~.x %>% 
+                           expand_grid(participant = 1:.y) %>% 
+                           mutate(intercept = df.params$intercept) %>% 
+                           group_by(participant) %>% 
+                           mutate(participant_par = rnorm(1,
+                                                          sd = df.params$participant)) %>%
+                           group_by(question) %>% 
+                           mutate(question_par = rnorm(1,
+                                                       sd = df.params$question)) %>% 
+                           group_by(scenario) %>% 
+                           mutate(scenario_par = rnorm(1, 
+                                                       sd = df.params$question_scenario)) %>% 
+                           ungroup() %>% 
+                           mutate(predicted = intercept + participant_par + question_par + scenario_par,
+                                  probability = inv.logit(predicted),
+                                  response = rbinom(n(), 1, probability))),
+           fit = map(.x = data, 
+                     .f = ~ glmer(formula = response ~ 1 + (1 | participant) + 
+                                     (1 | question / scenario),
+                                 data = .x,
+                                 family = "binomial")),
+           p.value = map_dbl(.x = fit,
+                             .f = ~ .x %>% 
+                                 tidy() %>% 
+                                 filter(effect == "fixed") %>% 
+                                 pull(p.value))) %>% 
+    select(nsample, nsimulations, p.value)
+
+save(df.exp1.power,
+     file = "cache/df.exp1.power.RData")
+```
+
+## PLOTS
+
+### Bar plot
+
+```{r, fig.height=6, fig.width=16}
+set.seed(1)
+questions = c("ability", "effort", "knowledge", "intention", "social role")
+
+df.plot = df.exp1.long %>%
+    mutate(question = str_replace(question, "social_role", "social role"),
+           question = factor(question, levels = questions))
+
+ggplot(data = df.plot,
+       mapping = aes(x = trial,
+                     y = predicted,
+                     fill = question)) +
+    stat_summary(fun.data = "mean_cl_boot",
+                 geom = "bar",
+                 color = "black") +
+    stat_summary(fun.data = "mean_cl_boot",
+                 geom = "linerange",
+                 linewidth = 2) +
+    geom_hline(yintercept = 0.5,
+               linetype = 2) +
+    annotate("text",
+             x = 1:15,
+             y = 0.05,
+             label = 1:15,
+             size = 8) +
+    labs(y = "% predicted selection") +
+    scale_fill_brewer(palette = "Set1") +
+    scale_x_continuous(breaks = c(2, 5, 8, 11, 14),
+                       labels = questions,
+                       expand = expansion(mult = c(0.01, 0.01))) +
+    scale_y_continuous(breaks = seq(0, 1, 0.25),
+                       labels = str_c(seq(0, 100, 25), "%"),
+                       expand = expansion(mult = c(0, 0.02))) +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          text = element_text(size = 36),
+          axis.text.x = element_text(vjust = 0),
+          plot.margin = margin(b = 0.3, t = 0.2, l = 0.1, r = 0.1, unit = "cm"))
+
+ggsave(filename = "../../figures/paper/figure2.pdf",
+       width = 16,
+       height = 6)
+```
+
+### Histogram of individual participant responses
+
+```{r}
+df.plot = df.exp1.long %>%
+    group_by(participant) %>%
+    summarize(response = sum(predicted))
+
+ggplot(data = df.plot,
+       mapping = aes(x = response)) +
+    geom_histogram(binwidth = 1,
+                   boundary = -0.5,
+                   color = "black",
+                   fill = "lightblue") +
+    scale_x_continuous(breaks = 0:20) +
+    scale_y_continuous(breaks = seq(0, 20, 2),
+                       expand = expansion(mult = c(0, 0.1))) +
+    theme(panel.grid.major.y = element_line())
+```
+
+### Power analysis
+
+```{r}
+load(file = "cache/df.exp1.power.RData")
+
+df.plot = df.exp1.power %>% 
+    mutate(significant = p.value < 0.05) %>% 
+    group_by(nsample) %>%
+    summarize(power = sum(significant)/n())
+
+
+ggplot(data = df.plot,
+       mapping = aes(x = nsample,
+                     y = power)) + 
+    geom_line() +
+    geom_point() + 
+    scale_x_continuous(breaks = seq(5, 50, 5)) + 
+    labs(x = "sample size") +
+    theme(panel.grid.major.y = element_line())
+```
+
+# EXP 2: Coffee
+
+## EXP 2a: Generative
+
+### DATA
+
+#### Read in data
+
+```{r, message=FALSE, warning=FALSE}
+# data 
+df.exp2a = read_csv("../../data/experiment2a/experiment2a-trials.csv",
+                    show_col_types = FALSE) %>% 
+    rename(trial_img = map) %>% 
+    mutate(trial_img = str_remove(trial_img, "images/gen_models/"))
+
+# cost of moving on a red tile 
+red_cost = 3
+
+# model information 
+df.exp2.models = read_csv(
+    "../../data/experiment2a/experiment2a-trialinfo.csv",
+    show_col_types = FALSE) %>% 
+    mutate(action_cost = blue_yes + (red_cost * red_yes),
+           alternative_cost = blue_no + (red_cost * red_no),
+           across(.cols = c(action_cost, alternative_cost),
+                  .fns = ~ ifelse(home_tile == "blue", . - 1, . - 3)),
+           additional_action_cost = action_cost - alternative_cost)
+
+# combining data and model 
+df.exp2a.long = df.exp2a %>% 
+    left_join(df.exp2.models,
+              by = "trial_img") %>% 
+    mutate(workerid = as.factor(workerid)) %>% 
+    rename(participant = workerid)
+
+# only keep necessary information
+df.exp2a.long = df.exp2a.long %>%
+    select(participant, trial, 
+           action_cost, additional_action_cost, praise) %>% 
+    arrange(participant, trial) %>% 
+    # relabel trials to go from 1 to 48
+    group_by(participant) %>% 
+    mutate(trial = 1:48) %>% 
+    ungroup()
+
+# getting mean rating per trial
+df.exp2a.means = df.exp2a.long %>%
+    group_by(trial, action_cost, additional_action_cost) %>%
+    summarise(praise = mean(praise)) %>%
+    ungroup()
+
+df.exp2.model_index = tibble(name = c("baseline",
+                                      "action_cost",
+                                      "additional_action_cost",
+                                      "full",
+                                      "empirical"),
+                             color = c(NA,
+                                       "#e41a1c",
+                                       "#377eb8",
+                                       "#984EA3",
+                                       "gray80")) %>% 
+    pivot_wider(names_from = name,
+                values_from = color)
+```
+
+#### Demographics
+
+```{r, message=FALSE}
+df.exp2a.demographics = read_csv("../../data/experiment2a/experiment2a-participants.csv")
+
+df.exp2a.demographics %>%
+    count(race) %>%
+    fun.print_table()
+
+df.exp2a.demographics %>%
+    summarise(age_mean = mean(age),
+              age_sd = sd(age),
+              time_mean = mean(time/(1000*60)), # converting from ms to minutes
+              time_sd = sd(time/(1000*60)),
+              n = n()) %>%
+    fun.print_table(digits = 0)
+```
+
+
+### STATS
+
+#### Correlation between action cost and additional action cost
+
+```{r}
+df.exp2.models %>% 
+    select(action_cost, additional_action_cost) %>%
+    cor() %>% 
+    .[2]
+```
+
+
+#### Model fits
+
+##### Overall
+
+```{r}
+# fit models 
+fit.exp2a.baseline = brm(formula = praise ~ 1 + (1 | participant),
+                         data = df.exp2a.long,
+                         seed = 1,
+                         cores = 4,
+                         iter = 4000,
+                         file = "cache/fit.exp2a.baseline")
+
+fit.exp2a.action_cost = brm(formula = praise ~ 1 + action_cost + 
+                                (1 + action_cost | participant),
+                            data = df.exp2a.long,
+                            seed = 1,
+                            cores = 4,
+                            iter = 4000,
+                            file = "cache/fit.exp2a.action_cost")
+
+fit.exp2a.additional_action_cost = brm(formula = praise ~ 1 + additional_action_cost + 
+                                           (1 + additional_action_cost | participant),
+                                       data = df.exp2a.long,
+                                       seed = 1,
+                                       cores = 4,
+                                       iter = 4000,
+                                       file = "cache/fit.exp2a.additional_action_cost")
+
+fit.exp2a.full = brm(formula = praise ~ 1 + additional_action_cost + action_cost + 
+                         (1 + additional_action_cost + action_cost | participant),
+                     data = df.exp2a.long,
+                     seed = 1,
+                     cores = 4,
+                     iter = 4000,
+                     file = "cache/fit.exp2a.full")
+
+
+# add crossvalidation  
+fit.exp2a.baseline = add_criterion(fit.exp2a.baseline,
+                                   criterion = "loo",
+                                   reloo = T,
+                                   file = "cache/fit.exp2a.baseline")
+
+fit.exp2a.action_cost = add_criterion(fit.exp2a.action_cost,
+                                      criterion = "loo",
+                                      reloo = T,
+                                      file = "cache/fit.exp2a.action_cost")
+
+fit.exp2a.additional_action_cost = add_criterion(
+    fit.exp2a.additional_action_cost,
+    criterion = "loo",
+    reloo = T,
+    file = "cache/fit.exp2a.additional_action_cost")
+
+fit.exp2a.full = add_criterion(fit.exp2a.full,
+                               criterion = "loo",
+                               reloo = T,
+                               file = "cache/fit.exp2a.full")
+
+# getting the difference between models using LOOCV
+df.exp2a.elpd = loo_compare(fit.exp2a.baseline,
+                            fit.exp2a.action_cost,
+                            fit.exp2a.additional_action_cost,
+                            fit.exp2a.full) %>%
+    as_tibble(rownames = "model") %>% 
+    mutate(model = factor(model,
+                          levels = str_c("fit.exp2a.",
+                                            colnames(df.exp2.model_index)),
+                          labels = colnames(df.exp2.model_index))) %>% 
+    arrange(model)
+```
+
+##### Individual
+
+-   This first block needs to be run once in order to locally save the individual participant model fits
+
+```{r, echo=FALSE, eval=FALSE, results=FALSE}
+# initial model fits (used for compilation)
+fit.exp2a.baseline_individual = brm(
+    formula = praise ~ 1,
+    data = df.exp2a.long %>%
+        filter(participant == 56),
+    cores = 4,
+    chains = 4,
+    iter = 4000,
+    seed = 1,
+    file = "cache/fit.exp2a.baseline_individual")
+
+fit.exp2a.action_cost_individual = brm(
+    formula = praise ~ 1 + action_cost,
+    data = df.exp2a.long %>%
+        filter(participant == 56),
+    cores = 4,
+    chains = 4,
+    iter = 4000,
+    seed = 1,
+    file = "cache/fit.exp2a.action_cost_individual")
+
+fit.exp2a.additional_action_cost_individual = brm(
+    formula = praise ~ 1 + additional_action_cost,
+    data = df.exp2a.long %>%
+        filter(participant == 56),
+    cores = 4,
+    chains = 4,
+    iter = 4000,
+    seed = 1,
+    file = "cache/fit.exp2a.additional_action_cost_individual")
+
+fit.exp2a.full_individual = brm(
+    formula = praise ~ 1 + action_cost + additional_action_cost,
+    data = df.exp2a.long %>%
+        filter(participant == 56),
+    cores = 4,
+    chains = 4,
+    iter = 4000,
+    seed = 1,
+    file = "cache/fit.exp2a.full_individual")
+
+# fit models to individual participants
+df.exp2a.individual_fits = df.exp2a.long %>%
+    group_by(participant) %>%
+    nest() %>%
+    ungroup() %>%
+    # fit model for each participant
+    mutate(baseline = map(.x = data,
+                          .f = ~ update(fit.exp2a.baseline_individual,
+                                        newdata = .x,
+                                        seed = 1)),
+           action_cost = map(.x = data,
+                             .f = ~ update(fit.exp2a.action_cost_individual,
+                                           newdata = .x,
+                                           seed = 1)),
+           additional_action_cost = map(.x = data,
+                                        .f = ~ update(
+                                            fit.exp2a.additional_action_cost_individual,
+                                            newdata = .x,
+                                            seed = 1)),
+           full = map(.x = data,
+                      .f = ~ update(fit.exp2a.full_individual,
+                                    newdata = .x,
+                                    seed = 1))) %>%
+    mutate(baseline = map(.x = baseline,
+                          ~ add_criterion(.x,
+                                          criterion = c("loo"))),
+           action_cost = map(.x = action_cost,
+                             ~ add_criterion(.x,
+                                             criterion = c("loo"))),
+           additional_action_cost = map(.x = additional_action_cost,
+                                        ~ add_criterion(.x,
+                                                        criterion = c("loo"))),
+           full = map(.x = full,
+                      ~ add_criterion(.x,
+                                      criterion = c("loo"))))
+
+# compute model fit measures
+df.exp2a.individual_fits = df.exp2a.individual_fits %>% 
+    mutate(r_action_cost = map2_dbl(.x = data,
+                             .y = action_cost,
+                             .f = ~ cor(.x$praise, .y %>%
+                                          fitted() %>%
+                                          .[, 1])),
+         r_additional_action_cost = map2_dbl(.x = data,
+                                .y = additional_action_cost,
+                                .f = ~ cor(.x$praise, .y %>%
+                                             fitted() %>%
+                                             .[, 1])),
+         r_full = map2_dbl(.x = data,
+                                       .y = full,
+                                       .f = ~ cor(.x$praise, .y %>%
+                                                    fitted() %>%
+                                                    .[, 1])),
+         rmse_action_cost = map2_dbl(.x = data,
+                                .y = action_cost,
+                                .f = ~ fun.rmse(.x$praise, .y %>%
+                                              fitted() %>%
+                                              .[, 1])),
+         rmse_additional_action_cost = map2_dbl(.x = data,
+                                   .y = additional_action_cost,
+                                   .f = ~ fun.rmse(.x$praise, .y %>%
+                                                 fitted() %>%
+                                                 .[, 1])),
+         rmse_full = map2_dbl(.x = data,
+                                          .y = full,
+                                          .f = ~ fun.rmse(.x$praise, .y %>%
+                                                        fitted() %>%
+                                                        .[, 1])),
+         model_comparison = pmap(.l = list(baseline = baseline,
+                                           action_cost = action_cost,
+                                           additional_action_cost = additional_action_cost,
+                                           full = full),
+                                 .f = ~ loo_compare(..1, ..2, ..3, ..4)),
+         best_model = map_chr(.x = model_comparison,
+                              .f = ~ rownames(.) %>%
+                                .[1]),
+         best_model = factor(best_model,
+                             levels = c("..1", "..2", "..3", "..4"),
+                             labels = c("baseline",
+                                        "action_cost",
+                                        "additional_action_cost",
+                                        "full")))
+
+# getting best-fitting model
+df.exp2a.individual_fits %>%
+  count(best_model)
+
+save(df.exp2a.individual_fits, file = "cache/df.exp2a.individual_fits.RData")
+```
+
+- Afterwards, it's sufficient to run the code block below.
+
+```{r}
+load(file = "cache/df.exp2a.individual_fits.RData")
+```
+
+### PLOTS
+
+#### Trial selection
+
+```{r, fig.width=12, fig.height=5}
+set.seed(1)
+
+# trial selection: 21, 19, 9, 13 
+trial_selection = c(21, 19, 9, 13)
+
+# alternative trial selection
+trial_selection = c(21, 13, 9, 16)
+
+fun.load_image = function(trial){
+  readPNG(str_c("../../figures/stimuli/experiment2a/images/experiment2a_trial_",
+                trial, ".png"))
+}
+
+
+# linking images and clips
+df.images = df.exp2a.long %>%
+    distinct(trial) %>%
+    filter(trial %in% trial_selection) %>% 
+    mutate(grob = map(.x = trial,
+                      .f = ~ fun.load_image(trial = .x)))
+
+df.plot = df.exp2a.long %>% 
+    filter(trial %in% trial_selection)
+
+df.model = df.exp2a.means %>% 
+    filter(trial %in% trial_selection) %>% 
+    left_join(fit.exp2a.action_cost %>% 
+                  fitted(newdata = df.exp2a.means,
+                         re_formula = NA) %>% 
+                  as_tibble() %>% 
+                  mutate(trial = 1:n(),
+                         action_cost_prediction = Estimate) %>% 
+                  select(trial, action_cost_prediction),
+              by = "trial") %>% 
+    left_join(fit.exp2a.additional_action_cost %>% 
+                  fitted(newdata = df.exp2a.means,
+                         re_formula = NA) %>% 
+                  as_tibble() %>% 
+                  mutate(trial = 1:n(),
+                         additional_action_cost_prediction = Estimate) %>% 
+                  select(trial, additional_action_cost_prediction),
+              by = "trial") %>% 
+    left_join(fit.exp2a.full %>% 
+                  fitted(newdata = df.exp2a.means,
+                         re_formula = NA) %>% 
+                  as_tibble() %>% 
+                  mutate(trial = 1:n(),
+                         full_prediction = Estimate) %>% 
+                  select(trial, full_prediction),
+              by = "trial") %>% 
+    pivot_longer(cols = c(praise,
+                          action_cost_prediction,
+                          additional_action_cost_prediction,
+                          full_prediction),
+                 names_to = "model",
+                 values_to = "prediction") %>% 
+    select(trial, model, prediction)
+
+df.text = df.images %>% 
+    select(trial) %>% 
+    mutate(x = 1.5,
+           y = 50,
+           # label = c("3", "4", "2", "1"))
+           label = c("3", "2", "4", "1"))
+
+ggplot(data = df.plot,
+       mapping = aes(x = 1,
+                     y = praise)) + 
+    stat_summary(fun = "mean",
+                 geom = "bar",
+                 color = "black",
+                 fill = df.exp2.model_index$empirical) + 
+    stat_summary(fun.data = "mean_cl_boot",
+                 geom = "linerange",
+                 linewidth = 1.5) + 
+    geom_point(alpha = 0.1,
+               position = position_jitter(width = 0.3, height = 0)) + 
+    geom_point(data = df.model %>% 
+                   filter(str_detect(model, "prediction")),
+               mapping = aes(y = prediction, 
+                             fill = model,
+                             group = model),
+               shape = 21,
+               size = 3,
+               position = position_dodge(width = 0.75)) + 
+    geom_custom(data = df.images,
+                mapping = aes(data = grob,
+                              x = -Inf,
+                              y = Inf),
+                grob_fun = function(x) rasterGrob(x,
+                                                  vjust = -0.25,
+                                                  hjust = 1,
+                                                  width = unit(6.8, "cm"))) + 
+    geom_text(data = df.text,
+              mapping = aes(x = x,
+                            y = y,
+                            label = label),
+              size = 10,
+              vjust = -10.2,
+              hjust = 0.5) + 
+    coord_flip(clip = "off") +
+    facet_wrap(~ factor(trial, levels = trial_selection),
+               ncol = 4) + 
+    scale_y_continuous(breaks = seq(0, 100, 25),
+                       labels = seq(0, 100, 25),
+                       limits = c(0, 100)) +
+    scale_fill_manual(labels = c("action cost model",
+                                 "additional action cost model",
+                                 "full model"),
+                        values = c(df.exp2.model_index$action_cost,
+                                   df.exp2.model_index$additional_action_cost,
+                                   df.exp2.model_index$full)) +
+    labs(y = "praise judgments (0 = none, 100 = a lot)") +
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          axis.text.x = element_text(size = 16),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.line.y = element_blank(),
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(vjust = -0.2),
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          panel.spacing.x = unit(0.5, "cm"),
+          plot.margin = margin(t = 8, l = 0.1, r = 0.3, b = 0.1, unit = "cm")) + 
+    guides(fill = guide_legend(override.aes = list(size = 5)))
+
+ggsave("../../figures/paper/figure4.pdf",
+       width = 12,
+       height = 5)
+```
+
+#### Scatterplot
+
+```{r, fig.height=5, fig.width=15}
+set.seed(1)
+
+# model colors
+model_colors = c("full" = df.exp2.model_index$full,
+                 "action_cost" = df.exp2.model_index$action_cost,
+                 "additional_action_cost" = df.exp2.model_index$additional_action_cost)
+
+# function for computing model predictions
+fun.model_predictions = function(fit, data, name){
+  fit %>%
+    fitted(newdata = data,
+           re_formula = NA) %>%
+    as_tibble() %>%
+    clean_names() %>%
+    rename_with(.fn  = ~ str_c(., ".", name))
+}
+
+# compute means and bootstrapped confidence intervals
+df.plot = df.exp2a.long %>%
+  select(participant,
+         trial,
+         praise,
+         action_cost,
+         additional_action_cost) %>%
+  reframe(praise = smean.cl.boot(praise),
+          index = c("mean", "low", "high"), 
+          .by = c(trial, action_cost, additional_action_cost)) %>% 
+  pivot_wider(names_from = index,
+              values_from = praise)
+
+# add model predictions
+df.plot = df.plot %>%
+  bind_cols(fun.model_predictions(fit = fit.exp2a.full,
+                                  data = df.plot,
+                                  name = "full"),
+            fun.model_predictions(fit = fit.exp2a.action_cost,
+                                  data = df.plot,
+                                  name = "action_cost"),
+            fun.model_predictions(fit = fit.exp2a.additional_action_cost,
+                                  data = df.plot,
+                                  name = "additional_action_cost"))
+
+# function to make plots
+fun.generative_model_plot = function(data, model, colors, xlabel, ylabel){
+  data = data %>%
+    rename(estimate = str_c("estimate.", model),
+           q2_5 = str_c("q2_5.", model),
+           q97_5 = str_c("q97_5.", model))
+
+  # make plots
+  plot = ggplot(data = data,
+         mapping = aes(x = estimate,
+                       y = mean)) +
+    geom_abline(intercept = 0,
+                slope = 1,
+                linetype = 2) +
+    geom_smooth(mapping = aes(y = estimate,
+                              ymin = q2_5,
+                              ymax = q97_5),
+                stat = "identity",
+                color = model_colors[model],
+                alpha = 0.1,
+                fill = model_colors[model]) +
+    geom_linerange(mapping = aes(ymin = low,
+                                 ymax = high),
+                   linewidth = 1,
+                   color = "gray80") +
+    geom_point(size = 2.5,
+               shape = 21,
+               color = "black",
+               fill = model_colors[model]) +
+    annotate(geom = "text",
+             label = data %>%
+               summarize(r = cor(.data[["estimate"]], .data[["mean"]]),
+                         rmse = fun.rmse(.data[["estimate"]], .data[["mean"]])) %>%
+               mutate(across(.cols = everything(), 
+                             .fns = ~ round(., 2)),
+                      r = as.character(r),
+                      r = substring(r, 2)) %>%
+               unlist() %>%
+               str_c(names(.), " = ", .),
+             x = c(0, 0),
+             y = c(100, 90),
+             size = 7,
+             hjust = 0) +
+    labs(x = xlabel,
+         y = "praise judgments") +
+    scale_x_continuous(breaks = seq(0, 100, 25)) +
+    scale_y_continuous(breaks = seq(0, 100, 25)) +
+    coord_cartesian(xlim = c(0, 100),
+                    ylim = c(0, 100)) +
+    theme(text = element_text(size = 23),
+          axis.title.x = element_markdown(color = model_colors[model]))
+  
+  if(ylabel == F){
+      plot = plot + 
+          theme(axis.title.y = element_blank())
+  }
+  return(plot)
+}
+
+# put plots together with patchwork
+p1 = fun.generative_model_plot(data = df.plot,
+                               model = "action_cost",
+                               xlabel = "action cost model",
+                               ylabel = T)
+
+p2 = fun.generative_model_plot(data = df.plot,
+                               model = "additional_action_cost",
+                               xlabel = "additional action cost model",
+                               ylabel = F)
+
+p3 = fun.generative_model_plot(data = df.plot,
+                               model = "full",
+                               xlabel = "full model",
+                               ylabel = F)
+
+p1 + p2 + p3 +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold"))
+
+
+ggsave("../../figures/paper/figure5.pdf",
+       width = 15,
+       height = 5)
+```
+
+### TABLES
+
+#### Model fits
+
+```{r, message=FALSE, warning=FALSE}
+# printing out the correlation btw model predictions and judgments
+fun.r_rmse = function(fit, dv){
+  df = fit %>%
+    fitted(newdata = df.exp2a.means,
+           re_formula = NA) %>%
+    as_tibble() %>%
+    clean_names()  %>%
+    bind_cols(df.exp2a.means)
+
+  if(sd(df$estimate) > 0){
+    df = df %>%
+      summarise(r = cor(.data[[dv]], estimate),
+                rmse = fun.rmse(.data[[dv]], estimate))
+  }else{
+    df = df %>%
+      summarise(rmse = fun.rmse(.data[[dv]], estimate))
+  }
+  return(df)
+}
+
+df.table1 = df.exp2a.elpd %>% 
+    select(model,
+           elpd = elpd_diff,
+           elpd_se = se_diff) %>% 
+    mutate(r = c(0,
+                 fun.r_rmse(fit = fit.exp2a.action_cost,
+                            dv = "praise")$r,
+                 fun.r_rmse(fit = fit.exp2a.additional_action_cost,
+                            dv = "praise")$r,
+                 fun.r_rmse(fit = fit.exp2a.full,
+                      dv = "praise")$r),
+           rmse = c(fun.r_rmse(fit = fit.exp2a.baseline,
+                               dv = "praise")$rmse,
+                    fun.r_rmse(fit = fit.exp2a.action_cost,
+                               dv = "praise")$rmse,
+                    fun.r_rmse(fit = fit.exp2a.additional_action_cost,
+                               dv = "praise")$rmse,
+                    fun.r_rmse(fit = fit.exp2a.full,
+                               dv = "praise")$rmse)) %>%
+    mutate(across(where(is.numeric), ~ round(., 2))) %>%
+    mutate(elpd = str_c(elpd, " (", elpd_se,")")) %>%
+    select(-elpd_se) %>%
+    left_join(df.exp2a.individual_fits %>%
+                  count(best_model) %>% 
+                  rename(`# best fit` = n,
+                         model = best_model),
+              by = "model") %>% 
+    select(model, r, rmse, elpd, `# best fit`)
+
+df.table2 =
+    fit.exp2a.baseline %>%
+    tidy(effects = "fixed",
+         fix.intercept = F,
+         conf.method = "HPDinterval") %>%
+    mutate(model = "baseline") %>%
+    bind_rows(fit.exp2a.action_cost %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "action_cost")) %>%
+    bind_rows(fit.exp2a.additional_action_cost %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "additional_action_cost")) %>%
+    bind_rows(fit.exp2a.full %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "full")) %>%
+    mutate(across(where(is.numeric), ~ round(., 2)),
+           label = str_c(estimate, " [", conf.low, ", ", conf.high, "]")) %>%
+    select(model, term, label) %>%
+    pivot_wider(names_from = term,
+                values_from = label) %>%
+    rename(intercept = Intercept) %>% 
+    left_join(df.table1,
+              by = "model") %>% 
+    mutate(model = str_replace_all(model, pattern = "_", " "))
+
+df.table2 %>% 
+    # fun.print_table("latex")
+    fun.print_table()
+```
+
+#### All trials
+
+```{r}
+set.seed(1)
+
+# function for computing model predictions
+fun.model_predictions = function(fit, data, name){
+  fit %>%
+    fitted(newdata = data,
+           re_formula = NA) %>%
+    as_tibble() %>%
+    clean_names() %>%
+    rename_with(.fn  = ~ str_c(., ".", name))
+}
+
+# compute means and bootstrapped confidence intervals
+df.table = df.exp2a.long %>%
+  select(participant,
+         trial,
+         praise,
+         action_cost,
+         additional_action_cost) %>%
+  reframe(praise = smean.cl.boot(praise),
+          index = c("mean", "low", "high"), 
+          .by = c(trial, action_cost, additional_action_cost)) %>%
+  pivot_wider(names_from = index,
+              values_from = praise)
+
+# add model predictions
+df.table = df.table %>%
+  bind_cols(fun.model_predictions(fit = fit.exp2a.full,
+                                  data = df.table,
+                                  name = "full"),
+            fun.model_predictions(fit = fit.exp2a.action_cost,
+                                  data = df.table,
+                                  name = "action_cost"),
+            fun.model_predictions(fit = fit.exp2a.additional_action_cost,
+                                  data = df.table,
+                                  name = "additional_action_cost"))
+
+df.table %>% 
+    mutate(across(.fns = ~ round(., 0))) %>% 
+    mutate(data = str_c(mean, " (", low, ", ", high, ")")) %>%
+    select(trial, action_cost, additional_action_cost, 
+           model_action_cost = estimate.action_cost, 
+           model_additional_action_cost = estimate.additional_action_cost, 
+           model_full = estimate.full, 
+           data) %>% 
+    # fun.print_table("latex", digits = 0)
+    fun.print_table("html",
+                    digits = 0)
+
+```
+
+## EXP 2b: Inference
+
+### DATA
+
+#### Read in data
+
+```{r, message=FALSE}
+df.exp2b = read_csv("../../data/experiment2b/experiment2b-trials.csv")
+
+# filtering out instruction trials
+df.exp2b.long = df.exp2b %>% 
+    filter(!is.na(trial)) %>% 
+    mutate(p_right = as.numeric(p_right),
+           map1 = case_when(map_order == 0 ~ left_map,
+                            map_order == 1 ~ right_map),
+           map2 = case_when(map_order == 0 ~ right_map,
+                            map_order == 1 ~ left_map),
+           # taking counterbalancing into account
+           p_right = case_when(map_order == 0 ~ p_right/100,
+                               map_order == 1 ~ 1 - (p_right/100))) %>%
+    mutate(map1 = as.numeric(str_extract(map1, "\\d+(?=.png?)")),
+           map2 = as.numeric(str_extract(map2, "\\d+(?=.png?)")),
+           praise_val = case_when(praise == "low"  ~ 0,
+                                  praise == "medium" ~ .5,
+                                  praise == "high" ~ 1)) %>% 
+    rename(participant = workerid) %>% 
+    select(-c(proliferate.condition, coffee_getter, recipient, 
+              error, left_map, right_map, map_order)) %>% 
+    relocate(participant, trial, map1, map2, praise, praise_val, p_right) %>% 
+    arrange(participant, trial)
+```
+
+#### Demographics
+
+```{r, message=FALSE}
+df.exp2b.demographics = read_csv("../../data/experiment2b/experiment2b-participants.csv")
+
+df.exp2b.demographics %>%
+    count(race) %>%
+    fun.print_table()
+
+df.exp2b.demographics %>%
+    summarise(age_mean = mean(age),
+              age_sd = sd(age),
+              time_mean = mean(time/(1000*60)), # converting from ms to minutes
+              time_sd = sd(time/(1000*60)),
+              n = n()) %>%
+    fun.print_table(digits = 0)
+```
+
+### STATS
+
+#### Model predictions
+
+```{r}
+df.exp2b.model = df.exp2.models %>% 
+    # add rescaled mean judgments from experiment 2a 
+    left_join(df.exp2a.means %>% 
+                  select(trial, empirical = praise),
+              by = c("map" = "trial")) %>% 
+    select(map, action_cost, additional_action_cost,
+           contains("rescaled"), empirical) %>% 
+    # model predictions for full model based on predictor weights in experiment 2a
+    mutate(full = fitted(object = fit.exp2a.full,
+                         newdata = .,
+                         re_formula = NA)[,1]) %>% 
+    mutate(across(.cols = c(action_cost, additional_action_cost,
+                            empirical, full),
+                  .fns = ~ rescale(., to = c(0, 1)),
+                  .names = "pred_{.col}"))
+
+# long data frame with scaled predictions for each map 
+df.exp2b.model.long = df.exp2b.long %>% 
+    left_join(df.exp2b.model %>% 
+                  select(map1 = map,
+                         action_cost1 = pred_action_cost,
+                         additional_action_cost1 = pred_additional_action_cost,
+                         full1 = pred_full,
+                         empirical1 = pred_empirical),
+              by = "map1") %>% 
+    left_join(df.exp2b.model %>% 
+                  select(map2 = map,
+                         action_cost2 = pred_action_cost,
+                         additional_action_cost2 = pred_additional_action_cost,
+                         full2 = pred_full,
+                         empirical2 = pred_empirical),
+              by = "map2") %>% 
+    pivot_longer(cols = c(contains("1"), contains("2"), -map1, -map2),
+                 names_sep = -1,
+                 names_to = c("model", "path")) %>%
+    mutate(path = str_c("path", path)) %>% 
+    pivot_wider(names_from = path,
+                values_from = value)
+
+# compute likelihood and posterior
+fun.exp2b.fit_sd_inference = function(sd, dd, models){
+    dd %>% 
+        rowwise() %>% 
+        filter(model %in% models) %>% 
+        mutate(likelihood1 = map2_dbl(.x = path1,
+                                      .y = praise_val,
+                                      .f = ~ dnorm(.x,
+                                                   mean = praise_val,
+                                                   sd = sd)),
+               likelihood2 = map2_dbl(.x = path2,
+                                      .y = praise_val,
+                                      .f = ~ dnorm(.x,
+                                                   mean = praise_val,
+                                                   sd = sd))) %>% 
+        ungroup() %>% 
+        mutate(posterior = likelihood2/(likelihood1 + likelihood2),
+               loss = (posterior - p_right)^2) %>% 
+        summarize(loss = mean(loss)) %>% 
+        pull(loss)
+}
+
+# find best-fitting parameter for the SD in the Gaussians 
+# param.exp2b.sd = suppressWarnings(optim(par = 1,
+#                                         fn = fun.exp2b.fit_sd_inference,
+#                                         dd = df.exp2b.model.long,
+#                                         models = c("action_cost",
+#                                                    "additional_action_cost",
+#                                                    "full",
+#                                                    "empirical")))
+# 
+# param_sd = param.exp2b.sd$par
+
+param_sd = 0.3984375
+
+df.exp2b.model.long = df.exp2b.model.long %>% 
+    rowwise() %>% 
+    mutate(likelihood1 = map2_dbl(.x = path1,
+                                  .y = praise_val,
+                                  .f = ~ dnorm(.x,
+                                               mean = praise_val,
+                                               sd = param_sd)),
+           likelihood2 = map2_dbl(.x = path2,
+                                  .y = praise_val,
+                                  .f = ~ dnorm(.x,
+                                               mean = praise_val,
+                                               sd = param_sd))) %>% 
+    ungroup() %>% 
+    mutate(posterior = likelihood2/(likelihood1 + likelihood2),
+           loss = (posterior - p_right)^2,
+           model = factor(model, levels = c("action_cost",
+                                            "additional_action_cost",
+                                            "full",
+                                            "empirical")))
+```
+
+#### Individual participant model fits
+
+```{r}
+models = c("action_cost",
+           "additional_action_cost",
+           "full")
+
+df.exp2b.model.long %>%
+    filter(model %in% models)  %>% 
+    group_by(participant, model) %>% 
+    summarize(loss = mean(loss)) %>% 
+    filter(loss == min(loss)) %>% 
+    ungroup() %>% 
+    count(model) %>% 
+    fun.print_table()
+```
+
+### PLOTS
+
+#### Histograms
+
+```{r, fig.width=24, fig.height=6}
+# plotting example trials
+trials = c(7, 6,
+           21, 13, 
+           25, 32)
+
+fun.load_image = function(trial){
+    readPNG(str_c("../../figures/stimuli/experiment2b/images/experiment2b_trial_",
+                  trial, ".png"))
+}
+
+df.plot = df.exp2b.long %>% 
+    filter(trial %in% trials) %>% 
+    mutate(p_right = 100 * p_right,
+           praise = factor(praise,
+                           levels = c("low", "medium", "high"),
+                           labels = c("low praise",
+                                      "medium praise",
+                                      "high praise")))
+
+df.mean = df.plot %>% 
+    group_by(trial, map1, map2, praise) %>% 
+    summarize(mean = mean(p_right)) %>% 
+    ungroup() %>% 
+    mutate(label = 1:6)
+
+df.model = df.exp2b.model.long %>% 
+    filter(trial %in% trials) %>% 
+    group_by(trial, map1, map2, praise, model) %>% 
+    summarize(prediction = mean(posterior)*100) %>% 
+    mutate(praise = factor(praise,
+                           levels = c("low", "medium", "high"),
+                           labels = c("low praise",
+                                      "medium praise",
+                                      "high praise")),
+           mutate = ifelse(model == "praise", "empirical", model)) 
+
+df.images = df.plot %>%
+    distinct(trial) %>%
+    mutate(grob = map(.x = trial, .f = ~ fun.load_image(trial = .x)))
+
+# plotting
+ggplot(data = df.plot,
+       mapping = aes(x = p_right)) +
+    geom_histogram(aes(fill = praise),
+                   color = "black",
+                   binwidth = 10,
+                   center = 5) +
+    geom_custom(data = df.images,
+                mapping = aes(data = grob,
+                              x = -Inf,
+                              y = Inf),
+                grob_fun = function(x) rasterGrob(x,
+                                                  interpolate = T,
+                                                  vjust = -0.1,
+                                                  hjust = 0,
+                                                  width = unit(8.7, "cm"))) +
+    geom_point(data = df.model,
+               mapping = aes(y = 40,
+                             x = prediction,
+                             color = model),
+               alpha = 0.5,
+               shape = 16,
+               size = 5) +
+    geom_vline(data = df.mean,
+               mapping = aes(xintercept = mean),
+               linetype = 2,
+               show.legend = F) + 
+    geom_text(data = df.mean,
+              mapping = aes(label = label,
+                            x = 50,
+                            y = 87),
+              size = 10) + 
+    facet_wrap(~ trial,
+               scales = "free_x",
+               nrow = 1) +
+    coord_cartesian(clip = "off",
+                    ylim = c(0, 40)) +
+    labs(y = "# participants") + 
+    scale_x_continuous(breaks = c(5, 50, 95),
+                       labels = c("definitely\nleft", "unsure", "definitely\nright"),
+                       limits = c(0, 100)) +
+    scale_color_manual(labels = c("action cost model",
+                                  "additional action cost model",
+                                  "full model",
+                                  "empirical model"),
+                       values = c(df.exp2.model_index$action_cost,
+                                  df.exp2.model_index$additional_action_cost,
+                                  df.exp2.model_index$full,
+                                  df.exp2.model_index$empirical)) +
+    scale_fill_manual(values = c("low praise" = "gray30",
+                                 "medium praise" = "gray50",
+                                 "high praise" = "gray70")) +
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          legend.text = element_text(size = 20),
+          panel.grid.major.y = element_line(),
+          axis.text.x = element_text(size = 16),
+          axis.title.x = element_blank(),
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          panel.spacing.x = unit(1.5, "cm"),
+          # panel.spacing.y = unit(6, "cm"),
+          plot.margin = margin(t = 5.8, l = 0.2, r = 0.5, b = 0.1, unit = "cm"),
+          legend.box = "vertical")
+    
+ggsave("../../figures/paper/figure6.pdf",
+       width = 24,
+       height = 6)
+```
+
+#### Scatter plots
+
+```{r, warning=FALSE, message=FALSE, fig.width=16, fig.height=4}
+set.seed(1)
+
+df.model = df.exp2b.model.long %>% 
+    select(trial, model, posterior) %>% 
+    distinct() %>% 
+    mutate(posterior = 100 * posterior)
+
+df.data = df.exp2b.long %>% 
+    mutate(p_right = 100 * p_right) %>% 
+    group_by(trial) %>% 
+    summarize(mean_cl_boot(p_right)) %>% 
+    rename(mean = y,
+           low = ymin,
+           high = ymax)
+
+df.plot = df.data %>% 
+    left_join(df.model,
+              by = "trial")
+
+df.text = df.plot %>% 
+    group_by(model) %>% 
+    summarize(r = cor(mean, posterior),
+              rmse = sqrt(mean((mean - posterior)^2))) %>% 
+    mutate(across(-model, ~ round(., 2)),
+           r = as.character(r),
+           r = str_c("r = ", substring(r, 2)),
+           rmse = str_c("rmse = ", rmse)) %>% 
+    pivot_longer(-model) %>% 
+    mutate(x = 0,
+           y = rep(c(100, 93), 4))
+
+l.plot = list(data = df.plot,
+              text = df.text)
+
+fun.exp2b.scatterplot = function(l.plot, model_name){
+    l.plot$data = l.plot$data %>% 
+        filter(model == model_name)
+    l.plot$text = l.plot$text %>% 
+        filter(model == model_name)
+    
+    p = ggplot(data = l.plot$data,
+           mapping = aes(x = posterior,
+                         y = mean)) + 
+        geom_abline(intercept = 0,
+                    slope = 1,
+                    linetype = 2,
+                    linewidth = 0.3) + 
+        geom_smooth(method = "lm",
+                    mapping = aes(color = model,
+                                  fill = model),
+                    alpha = 0.1,
+                    show.legend = F) +
+        geom_linerange(mapping = aes(ymin = low,
+                                     ymax = high),
+                       color = "gray80") + 
+        geom_point(mapping = aes(fill = model),
+                   shape = 21,
+                   show.legend = F,
+                   size = 2) + 
+        geom_text(data = l.plot$text,
+                  mapping = aes(x = x,
+                                y = y,
+                                label = value),
+                  size = 5,
+                  hjust = 0) + 
+        labs(x = str_c(str_replace_all(model_name, "_", " "), " model"),
+             y = "mean judgments") + 
+        scale_x_continuous(breaks = seq(0, 100, 25),
+                           limits = c(0, 100)) + 
+        scale_y_continuous(breaks = seq(0, 100, 25)) +
+        coord_cartesian(ylim = c(0, 100)) + 
+        scale_color_manual(values = c(
+            "action_cost" = df.exp2.model_index$action_cost,
+            "additional_action_cost" = df.exp2.model_index$additional_action_cost,
+            "full" = df.exp2.model_index$full,
+            "empirical" = df.exp2.model_index$empirical)) + 
+        scale_fill_manual(values = c(
+            "action_cost" = df.exp2.model_index$action_cost,
+            "additional_action_cost" = df.exp2.model_index$additional_action_cost,
+            "full" = df.exp2.model_index$full,
+            "empirical" = df.exp2.model_index$empirical)) + 
+        theme(text = element_text(size = 18),
+              axis.title.x = element_markdown(color = df.exp2.model_index[[model_name]])) 
+    
+    if(model_name != "action_cost"){
+        p = p + theme(axis.title.y = element_blank())
+    }
+    return(p)
+}
+
+p1 = fun.exp2b.scatterplot(l.plot, model_name = "action_cost")
+p2 = fun.exp2b.scatterplot(l.plot, model_name = "additional_action_cost")
+p3 = fun.exp2b.scatterplot(l.plot, model_name = "full")
+p4 = fun.exp2b.scatterplot(l.plot, model_name = "empirical")
+
+p1 + p2 + p3 + p4 + 
+    plot_layout(nrow = 1) & 
+    plot_annotation(tag_levels = "A") &
+    theme(plot.tag = element_text(face = "bold"))
+
+ggsave("../../figures/paper/figure7.pdf",
+       width = 16,
+       height = 4)
+```
+
+### TABLES
+
+#### Trial information
+
+```{r}
+df.exp2b.model.long %>% 
+    reframe(value = smean.cl.boot(p_right),
+            name = c("mean", "low", "high"),
+            .by = trial) %>% 
+    pivot_wider() %>% 
+    mutate(across(c(mean, low, high), ~ format(round(., 2),
+                                               nsmall = 2,
+                                               trim = T)),
+           judgment = str_c(mean, " (", low, ", ", high, ")")) %>% 
+    select(trial, judgment) %>% 
+    left_join(df.exp2b.model.long %>% 
+                  select(trial, map1, map2, praise, model, posterior) %>% 
+                  distinct() %>% 
+                  pivot_wider(names_from = model,
+                              values_from = posterior),
+              by = "trial") %>% 
+    relocate(judgment, .after = last_col()) %>% 
+    mutate(across(c(trial, map1, map2), ~ as.character(.))) %>% 
+    # fun.print_table(format = "latex",
+    #                 digits = 2)
+    fun.print_table()
+```
+
+# EXP 3: Fishermen
+
+## EXP 3a: Choices
+
+### DATA
+
+#### Read in data
+
+```{r, message=FALSE}
+# choice data 
+df.exp3a = read_csv("../../data/experiment3a/experiment3a-data.csv") %>%
+    clean_names() %>%
+    mutate(participant = as.numeric(as.factor(user))) %>%
+    # remove 3 judgments by participant 21 that have been recorded incorrectly
+    filter(judgment != -1) %>%
+    relocate(participant) %>%
+    arrange(participant)
+
+df.exp3a.model = read_csv(
+    "../../data/experiment3a/experiment3a-model.csv",
+    show_col_types = FALSE) %>%
+    clean_names() %>% 
+    select(trial, contains("pred_")) %>% 
+    distinct() %>% 
+    rename_with(.fn = ~ str_remove(.x, "pred_"),
+                .cols = contains("pred_"))
+
+df.exp3a %>% 
+    distinct(participant) %>% 
+    summarize(n_participants = n())
+```
+
+#### Demographics
+
+```{r}
+# number of participants
+df.exp3a %>% 
+    distinct(participant) %>% 
+    nrow()
+```
+
+### STATS
+
+#### Fit optimal heuristic model to the data
+
+```{r}
+df.data = df.exp3a %>% 
+    left_join(df.exp3a.model %>% 
+                  select(trial, optimal_heuristic),
+              by = "trial")
+
+fit.exp3a.optimal_heuristic = brm(
+    formula = judgment ~ 1 + optimal_heuristic + (1 + optimal_heuristic | participant),
+    data = df.data,
+    seed = 1,
+    cores = 4,
+    file = "cache/fit.exp3a.optimal_heuristic")
+
+df.exp3a.model = df.exp3a.model %>% 
+    mutate(optimal_heuristic_fitted = fit.exp3a.optimal_heuristic %>% 
+               fitted(newdata = df.exp3a.model,
+                      re_formula = NA) %>% 
+               as_tibble() %>% 
+               clean_names() %>% 
+               pull(estimate))
+```
+
+### PLOTS
+
+#### Selection of trials
+
+```{r, fig.width=14, fig.height=5}
+set.seed(1)
+
+trial_selection = c("t1_a3b1c2", "t1_a2b1c1",
+                    "t2_a3b1c1", "t3_a3b3c3", 
+                    "t2_a2b2c3", "t3_a3b1c2",
+                    "t2_a1b1c3", "t1_a1b2c2")
+
+df.plot = df.exp3a %>% 
+    filter(trial %in% trial_selection) %>% 
+    mutate(trial = factor(trial, levels = trial_selection))
+
+df.model = df.exp3a.model %>% 
+    select(-optimal_heuristic_fitted) %>%
+    filter(trial %in% trial_selection) %>%
+    pivot_longer(cols = -trial,
+                 names_to = "model",
+                 values_to = "prediction")
+
+df.text = df.plot %>% 
+    distinct(trial) %>% 
+    arrange(trial) %>% 
+    mutate(label = 1:n())
+
+df.index = df.plot %>% 
+    distinct(trial) %>% 
+    separate(trial, into = c("tree", "action"),
+             sep = "_",
+             remove = F) %>% 
+    separate(action, into = c("a", "b", "c"), sep = c(2, 4)) %>% 
+    mutate(across(.cols = -trial,
+                  .fns = ~ str_extract(.x, "[0-9]")),
+           tree_label = map(.x = tree,
+                            .f = ~ rep(fontawesome("fa-tree"), .x) %>% 
+                                str_flatten()),
+           player_label = str_c("**", a, "**", " ", b, " ", c),
+           player = NA)
+
+ggplot(data = df.plot,
+       mapping = aes(x = 1,
+                     y = judgment)) + 
+    stat_summary(fun = "mean",
+                 geom = "bar",
+                 fill = "gray80",
+                 color = "black") + 
+    stat_summary(fun.data = "mean_cl_boot",
+                 geom = "linerange",
+                 linewidth = 1.5) + 
+    geom_hline(yintercept = 0.5,
+               linetype = "dashed") +
+    geom_point(alpha = 0.1,
+               position = position_jitter(width = 0.3, height = 0)) + 
+    geom_point(data = df.model,
+               mapping = aes(y = prediction,
+                             fill = model,
+                             group = model),
+               shape = 21,
+               size = 5,
+               alpha = 0.5,
+               position = position_dodge(width = 0.75)) +
+    geom_text(data = df.text,
+              mapping = aes(x = 1,
+                            y = 1.3,
+                            label = label),
+              size = 10,
+              hjust = 0.5) +
+    geom_text(data = df.index, 
+              mapping = aes(y = 1.2,
+                            x = 1,
+                            label = tree_label),
+              family = 'fontawesome-webfont',
+              size = 6,
+              color = "darkgreen") +
+    geom_richtext(data = df.index,
+              mapping = aes(y = 1.1,
+                            x = 1,
+                            label = player_label),
+              fill = NA,
+              label.color = NA,
+              size = 6) +
+    coord_cartesian(clip = "off",
+                    ylim = c(0, 1)) +
+    facet_wrap(~ factor(trial, levels = trial_selection),
+               ncol = 8) + 
+    scale_y_continuous(breaks = seq(0, 1, .25),
+                       labels = seq(0, 100, 25)) +
+    scale_fill_manual(values = c("k_level" = "blue",
+                                 "optimal_heuristic" = "orange"),
+                      labels = c("recursive reasoning model", "heuristic choice model")) +
+    labs(y = "action judgment<br><span style = 'font-size:16pt'>(0 = fish, 100 = trees)</span>",
+         fill = "model") + 
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_textbox_simple(halign = 0.5,
+                                                orientation = "left-rotated"),
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          plot.margin = margin(t = 2.5, l = 0.1, r = 0.3, b = 0.1, unit = "cm")) + 
+    guides(fill = guide_legend(override.aes = list(size = 5)))
+
+ggsave("../../figures/paper/figure9.pdf",
+       width = 14,
+       height = 5)
+```
+
+#### Scatter plots
+
+```{r fig.height=6, fig.width=16, message=FALSE, warning=FALSE}
+set.seed(1)
+
+df.plot = df.exp3a %>% 
+    reframe(value = smean.cl.boot(judgment),
+            name = c("mean", "low", "high"), 
+            .by = trial) %>% 
+    pivot_wider() %>% 
+    left_join(df.exp3a.model,
+              by = "trial")
+
+fun.exp3a.scatter = function(data, model, color, modelname, ytitle){
+    p = ggplot(data = data,
+               mapping = aes(x = .data[[model]],
+                             y = mean)) +
+        geom_smooth(method = "lm",
+                    fill = color,
+                    color = color,
+                    alpha = 0.1,
+                    show.legend = F) +
+        geom_linerange(mapping = aes(ymin = low,
+                                     ymax = high),
+                       color = "gray80") + 
+        geom_point(fill = color,
+                   shape = 21,
+                   show.legend = F,
+                   size = 3) +
+        annotate(geom = "text",
+                 label = df.plot %>%
+                     summarize(r = cor(mean, .data[[model]]),
+                               rmse = fun.rmse(mean, .data[[model]])) %>%
+                     mutate(across(.fns = ~ round(., 2))) %>%
+                     unlist() %>%
+                     str_c(names(.), " = ", .),
+                 x = c(0, 0),
+                 y = c(1, 0.92),
+                 size = 7,
+                 hjust = 0) +
+        scale_x_continuous(breaks = seq(0, 1, 0.25),
+                           labels = seq(0, 100, 25)) +
+        scale_y_continuous(breaks = seq(0, 1, 0.25),
+                           labels = seq(0, 100, 25)) +
+        coord_cartesian(xlim = c(0, 1),
+                        ylim = c(0, 1)) +
+        labs(x = modelname,
+             y = "action judgment<br><span style = 'font-size:16pt'>(0 = fish, 100 = trees)</span>") + 
+        theme(legend.position = "none",
+              axis.title.x = element_markdown(color = color),
+              axis.title.y = element_textbox_simple(halign = 0.5,
+                                                    orientation = "left-rotated"))
+    
+    if(!ytitle){
+        p = p + theme(axis.title.y = element_blank())
+    }
+    return(p)
+}
+
+p1 = fun.exp3a.scatter(data = df.plot,
+                             model = "k_level",
+                             color = "blue",
+                             modelname = "recursive reasoning model",
+                             ytitle = T)
+
+p2 = fun.exp3a.scatter(data = df.plot,
+                             model = "optimal_heuristic_fitted",
+                             color = "orange",
+                             modelname = "heuristic choice model",
+                             ytitle = F)
+
+p1 + p2 + 
+    plot_annotation(tag_levels = "A") & 
+    theme(plot.tag = element_text(face = "bold"))
+
+ggsave("../../figures/paper/figure10.pdf",
+       width = 16,
+       height = 6)
+```
+
+### TABLES
+
+#### Trial information
+
+```{r}
+df.exp3a %>% 
+    distinct(trial) %>% 
+    mutate(index = 1:n()) %>% 
+    mutate(trees = str_sub(trial, start = 2, end = 2),
+           a = str_sub(trial, start = 5, end = 5),
+           b = str_sub(trial, start = 7, end = 7),
+           c = str_sub(trial, start = 9, end = 9)) %>% 
+    mutate(across(-trial, ~ as.numeric(.))) %>% 
+    left_join(df.exp3a.model,
+              by = "trial") %>% 
+    left_join(df.exp3a %>% 
+                  reframe(value = smean.cl.boot(judgment),
+                          name = c("mean", "low", "high"),
+                          .by = trial) %>% 
+                  pivot_wider(),
+              by = "trial") %>% 
+    mutate(across(.cols = where(is.numeric),
+                  .fns = ~ round(., 2))) %>%
+    mutate(judgment = str_c(mean, " (", low, ", ", high, ")")) %>% 
+    mutate(across(.cols = index:c, .fns = as.character)) %>%
+    select(-c(trial, mean, low, high, optimal_heuristic)) %>% 
+    fun.print_table()
+    # fun.print_table(format = "latex",
+    #                 digits = 2)
+```
+
+## EXP 3b: Blame
+
+### DATA
+
+#### Read in data
+
+```{r message=F}
+df.exp3b = read_csv("../../data/experiment3b/experiment3b-data.csv") %>%
+  clean_names() %>%
+  separate(col = trial,
+           into = c("trees", "strength", "actions", "player"),
+           sep = "_",
+           remove = F) %>%
+  mutate(actions = str_replace_all(actions, "[^[:alnum:]]", "")) %>%
+  separate(col = actions,
+           into = c("action_a", "action_b", "action_c"),
+           sep = c(1, 2)) %>%
+  separate(col = strength,
+           into = c("strength_a", "strength_b", "strength_c"),
+           sep = c(2, 4)) %>%
+  mutate(across(trees:strength_c, ~ as.numeric(str_extract(., "\\-*\\d+\\d*")))) %>%
+  mutate(across(action_a:action_c, ~ factor(.,
+                                            levels = 0:1,
+                                            labels = c("fish", "trees")))) %>%
+  mutate(player = factor(player,
+                         levels = 0:2,
+                         labels = letters[1:3])) %>%
+  rename(participant = user) %>%
+  arrange(participant)
+
+
+df.exp3b.selection = read_csv("../../data/experiment3b/experiment3b-data2.csv") %>% 
+    clean_names() %>%
+    separate(col = trial,
+             into = c("trees", "strength", "actions", "player"),
+             sep = "_",
+             remove = F) %>%
+    mutate(actions = str_replace_all(actions, "[^[:alnum:]]", "")) %>%
+    separate(col = actions,
+             into = c("action_a", "action_b", "action_c"),
+             sep = c(1, 2)) %>%
+    separate(col = strength,
+             into = c("strength_a", "strength_b", "strength_c"),
+             sep = c(2, 4)) %>%
+    mutate(across(trees:strength_c, ~ as.numeric(str_extract(., "\\-*\\d+\\d*")))) %>%
+    mutate(across(action_a:action_c, ~ factor(.,
+                                              levels = 0:1, 
+                                              labels = c("fish", "trees")))) %>%
+    mutate(player = factor(player,
+                           levels = 0:2,
+                           labels = letters[1:3]))
+```
+
+#### Demographics
+
+```{r}
+# number of participants
+df.exp3b %>% 
+    distinct(participant) %>% 
+    nrow()
+
+# number of judgments per trial 
+df.exp3b %>% 
+    count(trial) %>% 
+    summarize(min = min(n),
+              max = max(n))
+
+# number of judgments per participant 
+df.exp3b %>% 
+    count(participant) %>% 
+    summarize(min = min(n/3),
+              max = max(n/3))
+```
+
+### STATS
+
+#### Model predictions
+
+```{r, message=F}
+df.exp3b.model = read_csv(
+    "../../data/experiment3b/experiment3b-model.csv",
+    show_col_types = F) %>%
+    clean_names() %>%
+    rename(blame = `blame_17`,
+           blame_zscored = `blame_18`) %>% 
+    select(-c(x1, blame_zscored))
+
+df.exp3b.model.pivotality = df.exp3b.model %>% 
+    filter(model == "pivotality") %>% 
+    distinct(trial, blame) %>% 
+    rename(pivotality = blame)
+
+# filter out based on best-fitting recursive reasoning model for experiment 3a
+df.exp3b.model.rationality = df.exp3b.model %>% 
+    filter(model == "rationality",
+           k == 3,
+           rationality_beta == 1.5) %>% 
+    distinct(trial, blame) %>% 
+    select(trial, rationality = blame)
+
+
+df.exp3b = df.exp3b %>% 
+    left_join(df.exp3b.model.pivotality,
+              by = "trial") %>% 
+    left_join(df.exp3b.model.rationality,
+              by = "trial")
+```
+
+#### Model fits
+
+##### Overall
+
+- not sure that having random intercepts makes sense here as the data was z-scored (but maybe no harm?!)
+
+```{r}
+fit.exp3b.baseline = brm(
+    formula = judgment ~ 1 + (1 | participant),
+    data = df.exp3b,
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.baseline")
+
+fit.exp3b.pivotality = brm(
+    formula = judgment ~ 1 + pivotality + (1 + pivotality | participant),
+    data = df.exp3b,
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.pivotality")
+
+fit.exp3b.rationality = brm(
+    formula = judgment ~ 1 + rationality + (1 + rationality | participant),
+    data = df.exp3b,
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.rationality")
+
+fit.exp3b.full = brm(
+    formula = judgment ~ 1 + rationality + pivotality + 
+        (1 + rationality + pivotality | participant),
+    data = df.exp3b,
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.full")
+
+# add crossvalidation  
+fit.exp3b.baseline = add_criterion(fit.exp3b.baseline,
+                                   criterion = "loo",
+                                   reloo = T,
+                                   file = "cache/fit.exp3b.baseline")
+
+fit.exp3b.pivotality = add_criterion(fit.exp3b.pivotality,
+                                      criterion = "loo",
+                                      reloo = T,
+                                      file = "cache/fit.exp3b.pivotality")
+
+fit.exp3b.rationality = add_criterion(fit.exp3b.rationality,
+                                      criterion = "loo",
+                                      reloo = T,
+                                      file = "cache/fit.exp3b.rationality")
+
+fit.exp3b.full = add_criterion(fit.exp3b.full,
+                                      criterion = "loo",
+                                      reloo = T,
+                                      file = "cache/fit.exp3b.full")
+
+
+# getting the difference between models using LOOCV
+df.exp3b.elpd = loo_compare(fit.exp3b.baseline,
+                            fit.exp3b.pivotality,
+                            fit.exp3b.rationality,
+                            fit.exp3b.full) %>%
+    as_tibble(rownames = "model") %>%
+    rownames_to_column() %>%
+    mutate(model = factor(model,
+                          levels = str_c("fit.exp3b.", c("baseline",
+                                                         "pivotality",
+                                                         "rationality",
+                                                         "full")),
+                          labels = c("baseline",
+                                     "pivotality",
+                                     "rationality",
+                                     "full"))) %>% 
+    remove_rownames()
+```
+
+##### Individual
+
+```{r, eval=FALSE}
+# fit each model to one participant for compiling
+
+fit.exp3b.baseline.individual = brm(
+    formula = judgment ~ 1,
+    data = df.exp3b  %>% 
+        filter(participant == "10_9qveRxa"),
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.baseline.individual")
+
+fit.exp3b.pivotality.individual = brm(
+    formula = judgment ~ 1 + pivotality,
+    data = df.exp3b  %>% 
+        filter(participant == "10_9qveRxa"),
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.pivotality.individual")
+
+fit.exp3b.rationality.individual = brm(
+    formula = judgment ~ 1 + rationality,
+    data = df.exp3b  %>% 
+        filter(participant == "10_9qveRxa"),
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.rationality.individual")
+
+fit.exp3b.full.individual = brm(
+    formula = judgment ~ 1 + rationality + pivotality,
+    data = df.exp3b  %>% 
+        filter(participant == "10_9qveRxa"),
+    cores = 4,
+    seed = 1,
+    file = "cache/fit.exp3b.full.individual")
+
+# fit models to individual participants
+df.exp3b.individual_fits = df.exp3b %>%
+    group_by(participant) %>%
+    nest() %>%
+    ungroup() %>%
+    # fit model for each participant
+    mutate(baseline = map(.x = data,
+                          .f = ~ update(fit.exp3b.baseline.individual,
+                                        newdata = .x,
+                                        seed = 1)),
+           pivotality = map(.x = data,
+                            .f = ~ update(fit.exp3b.pivotality.individual,
+                                          newdata = .x,
+                                          seed = 1)),
+           rationality = map(.x = data,
+                             .f = ~ update(fit.exp3b.rationality.individual,
+                                           newdata = .x,
+                                           seed = 1)),
+           full = map(.x = data,
+                         .f = ~ update(fit.exp3b.full.individual,
+                                       newdata = .x,
+                                       seed = 1))) %>%
+    mutate(baseline = map(.x = baseline,
+                          ~ add_criterion(.x,
+                                          criterion = c("loo"))),
+           pivotality = map(.x = pivotality,
+                            ~ add_criterion(.x,
+                                            criterion = c("loo"))),
+           rationality = map(.x = rationality,
+                             ~ add_criterion(.x,
+                                             criterion = c("loo"))),
+           full = map(.x = full,
+                         ~ add_criterion(.x,
+                                         criterion = c("loo"))))
+
+df.exp3b.individual_fits = df.exp3b.individual_fits %>% 
+    mutate(model_comparison = pmap(.l = list(baseline = baseline,
+                                             pivotality = pivotality,
+                                             rationality = rationality,
+                                             full = full),
+                                   .f = ~ loo_compare(..1, ..2, ..3, ..4)),
+           best_model = map_chr(.x = model_comparison,
+                                .f = ~ rownames(.) %>%
+                                    .[1]),
+           best_model = factor(best_model,
+                               levels = c("..1", "..2", "..3", "..4"),
+                               labels = c("baseline",
+                                          "pivotality",
+                                          "rationality",
+                                          "full")))
+
+# getting best-fitting model
+df.exp3b.individual_fits %>%
+  count(best_model)
+ 
+save(df.exp3b.individual_fits, file = "cache/df.exp3b.individual_fits.RData")
+```
+
+```{r}
+load(file = "cache/df.exp3b.individual_fits.RData")
+```
+
+#### Fit model predictions to means
+
+```{r}
+df.exp3b.regression = df.exp3b %>% 
+    group_by(trial, pivotality, rationality) %>%
+    summarize(judgment = mean(judgment)) %>% 
+    ungroup() %>% 
+    bind_cols(fitted(object = fit.exp3b.pivotality,
+                     newdata = .,
+                     re_formula = NA) %>%
+                  as_tibble() %>% 
+                  rename_with(.cols = everything(),
+                              .fn = ~ str_c("pivotality_", .))) %>% 
+    bind_cols(fitted(object = fit.exp3b.rationality,
+                     newdata = .,
+                     re_formula = NA) %>%
+                  as_tibble() %>% 
+                  rename_with(.cols = everything(),
+                              .fn = ~ str_c("rationality_", .))) %>% 
+    bind_cols(fitted(object = fit.exp3b.full,
+                     newdata = .,
+                     re_formula = NA) %>%
+                  as_tibble() %>% 
+                  rename_with(.cols = everything(),
+                              .fn = ~ str_c("full_", .))) %>% 
+    clean_names()
+```
+
+### PLOTS
+
+#### Selection of trials
+
+```{r, fig.width=20, fig.height=5}
+set.seed(1)
+
+player_colors = c("#e46f27", "#7f659f", "#1c4a7a")
+
+selection = c("T:1 S:313 A:FFF",
+              "T:2 S:221 A:TTF",
+              "T:3 S:331 A:TTF",
+              "T:3 S:133 A:FFF",
+              "T:3 S:213 A:FFF",
+              "T:3 S:213 A:FTF",
+              "T:3 S:112 A:FFF",
+              "T:3 S:112 A:FTF",
+              "T:3 S:322 A:FTT",
+              "T:3 S:223 A:FFF")
+
+df.plot = df.exp3b.selection %>% 
+    mutate(across(contains("action"),
+                  ~ factor(., levels = c("fish", "trees"),
+                           labels = c("F", "T"))),
+           label = str_c("T:", trees, 
+                         " S:", strength_a, strength_b, strength_c,
+                         " A:", action_a, action_b, action_c)) %>% 
+    mutate(label = factor(label,
+                          levels = selection,
+                          labels = selection)) %>% 
+    filter(label %in% selection)
+
+df.text = df.plot %>% 
+    select(-c(trial, judgment, player)) %>% 
+    distinct() %>% 
+    pivot_longer(cols = -c(trees, label),
+                 names_to = c("type", "player"),
+                 values_transform = list(value = as.character),
+                 names_sep = "_",
+                 values_to = "value") %>% 
+    pivot_wider(names_from = type,
+                values_from = value)
+
+df.index = df.text %>% 
+    distinct(label) %>% 
+    arrange(label) %>% 
+    mutate(index = 1:n(),
+           player = NA)
+
+df.trees = df.plot %>% 
+    select(label, trees) %>% 
+    distinct() %>% 
+    mutate(tree = map(.x = trees,
+                      .f = ~ rep(fontawesome("fa-tree"), .x) %>% 
+                          str_flatten()),
+           player = NA)
+
+df.model = df.plot %>% 
+    group_by(trial, label) %>% 
+    summarize(judgment = mean(judgment)) %>% 
+    ungroup() %>% 
+    left_join(df.exp3b.model.pivotality,
+              by = c("trial")) %>% 
+    left_join(df.exp3b.model.rationality,
+              by = c("trial")) %>% 
+    mutate(model_pivotality = lm(formula = judgment ~ pivotality,
+                                 data = .)$fitted.values,
+           model_rationality = lm(formula = judgment ~ rationality,
+                                 data = .)$fitted.values,
+           model_full = lm(formula = judgment ~ pivotality + rationality,
+                                 data = .)$fitted.values) %>% 
+    select(-c(judgment, pivotality, rationality)) %>%
+    pivot_longer(cols = -c(trial, label),
+                 names_to = "model",
+                 values_to = "judgment") %>% 
+    mutate(player = str_sub(trial, -1),
+           player = factor(player,
+                           levels = 0:2,
+                           labels = letters[1:3])) %>% 
+    filter(model == "model_full")
+
+ggplot(data = df.plot,
+       mapping = aes(x = player,
+                     y = judgment,
+                     fill = player)) + 
+    stat_summary(fun.data = "mean_cl_boot",
+                 geom = "pointrange",
+                 shape = 21,
+                 size = 0.75,
+                 show.legend = F) + 
+    geom_point(mapping = aes(color = player),
+               position = position_jitter(width = 0.1, height = 0),
+               alpha = 0.1,
+               show.legend = F) + 
+    geom_point(data = df.model,
+               alpha = 1,
+               shape = 1,
+               color = "black",
+               size = 3,
+               show.legend = F) + 
+    geom_text(data = df.text, 
+              mapping = aes(y = 1.15,
+                            x = player,
+                            label = strength),
+              size = 6) +
+    geom_text(data = df.text, 
+              mapping = aes(y = 1.05,
+                            x = player,
+                            label = action),
+              size = 6) +
+    geom_text(data = df.trees, 
+              mapping = aes(y = 1.26,
+                            x = 2,
+                            label = tree),
+              family = 'fontawesome-webfont',
+              size = 6,
+              color = "darkgreen") +
+    geom_text(data = df.index, 
+              mapping = aes(y = 1.4,
+                            x = 2,
+                            label = index),
+              size = 10) +
+    facet_grid(~ label) +
+    scale_y_continuous(breaks = seq(0, 1, 0.25),
+                       labels = seq(0, 100, 25)) +
+    scale_fill_manual(values = player_colors) +
+    scale_color_manual(values = player_colors) +
+    # scale_shape_manual(values = 22:24) +
+    scale_x_discrete(labels = c("A", "B", "C")) +
+    coord_cartesian(ylim = c(0, 1),
+                    clip = "off") + 
+    labs(x = "fisherman",
+         y = "blame judgment") +
+    theme(strip.text = element_blank(),
+          strip.background = element_blank(),
+          panel.grid.major.y = element_line(),
+          panel.spacing = unit(0.75, "cm"),
+          plot.margin = margin(t = 3, b = 0.5, l = 0.5, r = 0.5, "cm"))
+
+ggsave("../../figures/paper/figure11.pdf",
+       width = 20,
+       height = 5)
+```
+
+#### Scatter plots
+
+```{r, fig.width = 15, fig.height = 5}
+set.seed(1)
+
+df.plot = df.exp3b %>% 
+    reframe(judgment = smean.cl.boot(judgment),
+            name = c("mean", "low", "high"), 
+            .by = trial) %>% 
+    pivot_wider(names_from = name,
+                values_from = judgment) %>% 
+    left_join(df.exp3b.regression %>% 
+                  select(-judgment),
+              by = c("trial"))
+
+df.text = df.plot %>% 
+    reframe(across(.cols = c(pivotality_estimate, rationality_estimate, full_estimate),
+                   .fns = ~ list(r = cor(mean, .),
+                                 rmse = fun.rmse(mean, .)))) %>% 
+    mutate(name = c("r", "rmse")) %>%
+    pivot_longer(cols = -name,
+                 names_to = "model",
+                 values_to = "value") %>% 
+    unnest(value) %>% 
+    mutate(value = round(value, digits = 2),
+           value = ifelse(name == "r", str_sub(value, start = 2), value),
+           label = str_c(name, " = ", value),
+           x = -1.5,
+           y = ifelse(name == "r", 1.5, 1.25))
+
+fun.exp3b.scatter = function(data, text, modelname, color, ytitle = T){
+    p = ggplot(data = data,
+               mapping = aes(x = .data[[str_c(modelname, "_estimate")]],
+                             y = mean)) + 
+        geom_abline(intercept = 0,
+                    slope = 1,
+                    linetype = 2,
+                    linewidth = 0.3) + 
+        geom_smooth(mapping = aes(y = .data[[str_c(modelname, "_estimate")]],
+                                  ymin = .data[[str_c(modelname, "_q2_5")]],
+                                  ymax = .data[[str_c(modelname, "_q97_5")]]),
+                    stat = "identity",
+                    color = color,
+                    fill = color,
+                    alpha = 0.1) +
+        geom_linerange(alpha = 0.1,
+                       mapping = aes(ymin = low,
+                                     ymax = high)) +
+        geom_point(fill = color,
+                   shape = 21) + 
+        geom_text(data = text %>% 
+                      filter(model == str_c(modelname, "_estimate")),
+                  mapping = aes(label = label,
+                                x = x,
+                                y = y),
+                  hjust = 0,
+                  size = 6) +
+        labs(x = str_c(modelname, " model"),
+             y = "blame judgment") +
+        scale_y_continuous(breaks = seq(-1.5, 1.5, 0.5),
+                           labels = seq(-1.5, 1.5, 0.5)) +
+        scale_x_continuous(breaks = seq(-1.5, 1.5, 0.5),
+                           labels = seq(-1.5, 1.5, 0.5)) +
+        coord_cartesian(xlim = c(-1.5, 1.5),
+                        ylim = c(-1.5, 1.5)) + 
+        theme(axis.title.x = element_markdown(color = color))
+    
+    if(ytitle == F){
+        p = p + 
+            theme(axis.title.y = element_blank())
+    }
+    p
+}
+
+p1 = fun.exp3b.scatter(data = df.plot, 
+                            text = df.text,
+                            modelname = "rationality",
+                            color = "blue")
+
+p2 = fun.exp3b.scatter(data = df.plot, 
+                            text = df.text,
+                            modelname = "pivotality",
+                            color = "red",
+                            ytitle = F)
+
+p3 = fun.exp3b.scatter(data = df.plot, 
+                            text = df.text,
+                            modelname = "full",
+                            color = "purple",
+                            ytitle = F)
+
+p1 + p2 + p3 & 
+    plot_annotation(tag_levels = "A") & 
+    theme(plot.tag = element_text(face = "bold"))
+
+ggsave("../../figures/paper/figure12.pdf",
+       width = 15,
+       height = 5)
+```
+
+### TABLES
+
+#### Model fits
+
+```{r}
+# printing out the correlation btw model predictions and judgments
+df.exp3b.means = df.exp3b %>% 
+    group_by(trial, pivotality, rationality) %>%
+    summarize(judgment = mean(judgment)) %>% 
+    ungroup()
+
+fun.r_rmse = function(fit, dv){
+  df = fit %>%
+    fitted(newdata = df.exp3b.means,
+           re_formula = NA) %>%
+    as_tibble() %>%
+    clean_names()  %>%
+    bind_cols(df.exp3b.means)
+
+  if(sd(df$estimate) > 0){
+    df = df %>%
+      summarise(r = cor(.data[[dv]], estimate),
+                rmse = fun.rmse(.data[[dv]], estimate))
+  }else{
+    df = df %>%
+      summarise(rmse = fun.rmse(.data[[dv]], estimate))
+  }
+  return(df)
+}
+
+df.table1 = df.exp3b.elpd %>%
+    select(model,
+           elpd = elpd_diff,
+           elpd_se = se_diff) %>%
+    left_join(tibble(model = c("baseline",
+                               "pivotality",
+                               "rationality",
+                               "full"),
+                     r = c(0,
+                           fun.r_rmse(fit = fit.exp3b.pivotality,
+                                      dv = "judgment")$r,
+                           fun.r_rmse(fit = fit.exp3b.rationality,
+                                      dv = "judgment")$r,
+                           fun.r_rmse(fit = fit.exp3b.full,
+                                      dv = "judgment")$r),
+                     rmse = c(fun.r_rmse(fit = fit.exp3b.baseline,
+                                         dv = "judgment")$rmse,
+                              fun.r_rmse(fit = fit.exp3b.pivotality,
+                                         dv = "judgment")$rmse,
+                              fun.r_rmse(fit = fit.exp3b.rationality,
+                                         dv = "judgment")$rmse,
+                              fun.r_rmse(fit = fit.exp3b.full,
+                                         dv = "judgment")$rmse)),
+              by = "model") %>%
+    mutate(across(where(is.numeric), ~ round(., 2))) %>%
+    mutate(elpd = str_c(elpd, " (", elpd_se,")")) %>%
+    select(-elpd_se) %>%
+    left_join(df.exp3b.individual_fits %>%
+                  count(best_model) %>%
+                  rename(`# best fit` = n,
+                         model = best_model),
+              by = "model") %>%
+    select(model, r, rmse, elpd, `# best fit`)
+
+df.table2 =
+    fit.exp3b.baseline %>%
+    tidy(effects = "fixed",
+         fix.intercept = F,
+         conf.method = "HPDinterval") %>%
+    mutate(model = "baseline") %>%
+    bind_rows(fit.exp3b.pivotality %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "pivotality")) %>%
+    bind_rows(fit.exp3b.rationality %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "rationality")) %>%
+    bind_rows(fit.exp3b.full %>%
+                  tidy(effects = "fixed",
+                       fix.intercept = F,
+                       conf.method = "HPDinterval") %>%
+                  mutate(model = "full")) %>%
+    mutate(across(where(is.numeric), ~ round(., 2)),
+           label = str_c(estimate, " [", conf.low, ", ", conf.high, "]")) %>%
+    select(model, term, label) %>%
+    pivot_wider(names_from = term,
+                values_from = label) %>%
+    rename(intercept = Intercept) %>%
+    left_join(df.table1,
+              by = "model") %>%
+    mutate(model = str_replace_all(model, pattern = "_", " "))
+
+df.table2 %>%
+    # fun.print_table("latex")
+    fun.print_table()
+```
+
+#### Trial information
+
+```{r}
+df.exp3b %>% 
+    group_by(trial, trees, strength_a, strength_b, strength_c, action_a, action_b, action_c, player) %>% 
+    reframe(value = smean.cl.boot(judgment),
+            name = c("mean", "low", "high")) %>% 
+    pivot_wider(names_from = name,
+                values_from = value) %>% 
+    mutate(across(c(mean, low, high), ~ format(round(., 2),
+                                               nsmall = 2,
+                                               trim = T)),
+           judgment = str_c(mean, " (", low, ", ", high, ")")) %>% 
+    left_join(df.exp3b.regression %>% 
+                  select(trial, contains("estimate")),
+              by = "trial") %>% 
+    rename_with(.fn = ~ str_remove(., "_estimate")) %>%
+    select(-c(mean, low,  high, trial)) %>% 
+    pivot_wider(names_from = player,
+                values_from = c(judgment, pivotality, rationality, full)) %>% 
+    relocate(judgment_a, judgment_b, judgment_c, .after = last_col()) %>% 
+    mutate(index = 1:n(), .before = 1,
+           across(contains("action"), .fns = ~ ifelse(. == "fish", "F", "T")),
+           across(c(trees, contains("strength")), .fns = ~ as.character(.))) %>%
+    select(-contains("pivotality"), -contains("rationality")) %>%
+    fun.print_table(digits = 2)
+    # fun.print_table(digits = 2,
+    #                 format = "latex")
+    
+```
+
+## EXP 3c: Inference
+
+### DATA
+
+#### Read in data
+
+```{r}
+con = dbConnect(SQLite(), dbname = "../../data/experiment3c/experiment3c-data.db")
+df.exp3c = dbReadTable(con,"inference_from_blame")
+dbDisconnect(con)
+
+df.exp3c = df.exp3c %>%
+  filter(status %in% c(4, 5))
+```
+
+#### Read in model predictions
+
+```{r, message = F, warning = F}
+df.exp3c.model = read_csv(
+    "../../data/experiment3c/experiment3c-model.csv") %>% 
+    select(-c(`...1`, rationality_beta, k)) %>% 
+    rename(a_strength = strength_a,
+           b_strength = strength_b, 
+           c_strength = strength_c,
+           a_action = action_a,
+           b_action = action_b, 
+           c_action = action_c) %>% 
+    rename_with(.fn = ~ str_replace(., "action", "choice")) %>% 
+    mutate(across(contains("choice"), ~ ifelse(. == 0, "fish", "trees")))
+```
+
+#### Demographic info
+
+```{r}
+# demographics
+df.exp3c.demographics = df.exp3c$datastring %>%
+    as.tbl_json() %>%
+    enter_object("questiondata") %>%
+    gather_object() %>%
+    append_values_string() %>%
+    as_tibble() %>%
+    rename(participant = document.id) %>%
+    pivot_wider(names_from = name,
+                values_from = string) %>%
+    mutate(begin = df.exp3c$beginhit,
+           end =  df.exp3c$endhit,
+           time = as.duration(interval(ymd_hms(df.exp3c$beginexp), 
+                                       ymd_hms(df.exp3c$endhit)))) %>%
+    select(-c(begin, end))
+
+datatable(df.exp3c.demographics)
+
+df.exp3c.demographics %>%
+    mutate(age = as.numeric(age)) %>%
+    summarise(age_mean = mean(age),
+              age_sd = sd(age),
+              n_female = sum(sex == "female"),
+              time_mean = mean(time) / 60,
+              time_sd = sd(time) / 60) %>%
+    fun.print_table(digits = 1)
+```
+
+#### Trial info
+
+```{r}
+# trial information
+df.exp3c.trialinfo = df.exp3c$datastring %>%
+  as.tbl_json() %>%
+  enter_object("data") %>%
+  gather_array() %>%
+  enter_object("trialdata") %>%
+  gather_object("name") %>%
+  filter(document.id == 1,
+         name == "situation") %>%
+  gather_object("index") %>%
+  append_values_string() %>%
+  as_tibble() %>%
+  filter(index != "unknowns",) %>%
+  pivot_wider(names_from = index,
+              values_from = string) %>%
+  select(trial = id,
+         situation = base_image) %>%
+  mutate(situation = str_remove(situation, ".png")) %>%
+  filter(!trial %in% c("att1", "att2")) %>%
+  separate(situation,
+           into = c("trees", "a", "b", "c")) %>%
+  mutate(trees = as.numeric(str_remove(trees, "t")),
+         trial = as.numeric(trial) + 1,
+         across(a:c,
+                ~ str_extract(., "\\-*\\d+\\.*\\d*"),
+                .names = "{.col}_strength"),
+         across(a:c,
+                ~ str_extract(., "fish|None|trees"),
+                .names = "{.col}_choice"),
+         across(a:c,
+                ~ str_extract(., "low|medium|high"),
+                .names = "{.col}_blame"),
+         ) %>%
+  select(-c(a:c)) %>%
+  arrange(trial)
+
+# change 0 to NA 
+df.exp3c.trialinfo = df.exp3c.trialinfo %>% 
+    mutate(across(.cols = contains("strength"),
+                  .fns = ~ as.numeric(.)),
+           across(.cols = where(is.numeric),
+                  .fns = ~ na_if(., 0)),
+           across(.cols = where(is.character),
+                  .fns = ~ na_if(., 'None')))
+```
+
+#### Possibilities
+
+```{r, warning=FALSE, message=FALSE}
+df.exp3c.possibilities = tibble() 
+
+for (i in 1:nrow(df.exp3c.trialinfo)) {
+df.tmp = df.exp3c.trialinfo %>% 
+    filter(trial == i) %>% 
+    select(where(~ !any(is.na(.)))) %>% 
+    left_join(df.exp3c.model)
+
+df.exp3c.possibilities = bind_rows(df.exp3c.possibilities,
+                                   df.tmp)
+}
+
+df.exp3c.possibilities = df.exp3c.possibilities %>% 
+    mutate(across(.cols = contains("_blame"),
+                  .fns = ~ factor(.,
+                                  levels = c("low", "medium", "high"),
+                                  labels = c(0, 0.5, 1)) %>% 
+                      as.character() %>% 
+                      as.numeric())) %>% 
+    relocate(trees, .after = trial) %>%
+    rename_with(.fn = ~ str_remove(., "blame_")) %>% 
+    pivot_longer(cols = c(contains("blame"),
+                          contains("rationality"),
+                          contains("pivotality")),
+                 names_to = c("player", "index"),
+                 values_to = "value",
+                 names_sep = "_") %>% 
+    pivot_wider(names_from = index,
+                values_from = value) %>% 
+    group_by(trial) %>% 
+    mutate(situation = rep(1:(n()/3), each = 3)) %>%
+    ungroup() %>% 
+    relocate(situation, .after = trial)
+
+# add predictions from the full model based on how much weight participants
+# put on each factor in experiment 3b 
+mixture_weight = fit.exp3b.full %>% 
+    tidy() %>% 
+    filter(term == "rationality" | term == "pivotality") %>% 
+    select(term, estimate) %>% 
+    pivot_wider(names_from = term,
+                values_from = estimate) %>%
+    mutate(weight = rationality / (rationality + pivotality)) %>% 
+    pull(weight)
+    
+df.exp3c.possibilities = df.exp3c.possibilities %>% 
+    mutate(full = mixture_weight * rationality + (1 - mixture_weight) * pivotality)
+```
+
+#### Main info
+
+```{r, warning=FALSE, message=FALSE}
+# main data
+df.exp3c.long = df.exp3c$datastring %>%
+  as.tbl_json() %>%
+  enter_object("data") %>%
+  gather_array() %>%
+  enter_object("trialdata") %>%
+  gather_object() %>%
+  append_values_string() %>%
+  as_tibble() %>%
+  rename(participant = document.id,
+         trial = array.index) %>%
+  mutate(test = string == "TESTTRIAL") %>%
+  group_by(participant, trial) %>%
+  filter(any(test)) %>%
+  ungroup() %>%
+  select(participant, trial, name, string) %>%
+  pivot_wider(names_from = name,
+              values_from = string) %>%
+  clean_names() %>%
+  select(participant, -trial, trial = trial_ix, order = trial_number, a_strength:fish) %>%
+  mutate(across(a_strength:fish, ~ na_if(., "???")))
+
+# filter out participants who didn't pass both of the attention checks
+df.exp3c.long = df.exp3c.long %>%
+  mutate(include = trial == "att1" & fish == "4",
+         include = ifelse(trial == "att2" & fish == "0", T, include)) %>%
+  group_by(participant) %>%
+  filter(sum(include) == 2) %>%
+  ungroup() %>%
+  filter(!trial %in% c("att1", "att2"))
+
+# some more restructuring
+df.exp3c.long = df.exp3c.long %>%
+  mutate(trial = as.numeric(trial) + 1,
+         across(.cols = contains("strength"),
+                .fns = ~ factor(., levels = 1:3)),
+         across(.cols = contains("choice"),
+                .fns = ~ factor(., levels = c("fish", "trees"))),
+         trees = str_extract(trees, "\\-*\\d+\\.*\\d*"),
+         trees = factor(trees, levels = 1:3)) %>%
+  select(-c(fish, order, include)) %>%
+  pivot_longer(cols = -c(participant, trial),
+               names_to = "question",
+               values_to = "choice") %>%
+  na.omit() %>%
+  arrange(participant, trial)
+```
+
+### STATS
+
+#### Percentage of choices
+
+```{r}
+# human aggregate data 
+df.exp3c.aggregate = df.exp3c.long %>%
+    count(trial, question, choice) %>%
+    group_by(trial, question) %>%
+    mutate(people = n/sum(n),
+           choice = as.character(choice)) %>%
+    ungroup()
+```
+
+#### Boostrapped confidence intervals
+
+```{r, eval=FALSE}
+set.seed(1)
+
+# percentages with bootstrapped confidence intervals
+df.exp3c.confidence = df.exp3c.long %>%
+  mutate(index = str_c(trial, ".", question)) %>%
+  group_by(index) %>%
+  nest() %>%
+  mutate(bootstraps = map(.x = data,
+                          .f = ~ bootstrap(.x, n = 1000))) %>%
+  unnest(bootstraps) %>%
+  mutate(counts = map(.x = strap,
+                      .f = ~ .x %>%
+                        as_tibble() %>%
+                        count(choice))) %>%
+  select(index, .id, counts) %>%
+  unnest(counts) %>%
+  group_by(index, .id) %>%
+  mutate(p = n / sum(n)) %>%
+  group_by(index, choice) %>%
+  summarise(low = quantile(p, probs = 0.025),
+            high = quantile(p, probs = 0.975)) %>%
+  ungroup() %>%
+  separate(index,
+           into = c("trial", "question"),
+           sep = "\\.") %>%
+  mutate(trial = as.numeric(trial))
+
+# save(df.exp3c.confidence,
+#      file = "cache/df.exp3c.confidence.RData")
+```
+
+```{r}
+load(file = "cache/df.exp3c.confidence.RData")
+```
+
+#### Compute predicted posterior (and fit parameters)
+
+```{r}
+fun.fit.exp3c = function(p){
+    df.exp3c.posteriors = df.exp3c.possibilities %>%
+        mutate(likelihood_rationality = map2_dbl(.x = rationality, 
+                                                 .y = blame, 
+                                                 .f = ~ dnorm(.x,
+                                                              mean = .y,
+                                                              sd = p[1])),
+               likelihood_pivotality = map2_dbl(.x = pivotality, 
+                                                .y = blame, 
+                                                .f = ~ dnorm(.x,
+                                                             mean = .y,
+                                                             sd = p[1])),
+               likelihood_full = map2_dbl(.x = full, 
+                                             .y = blame, 
+                                             .f = ~ dnorm(.x,
+                                                          mean = .y,
+                                                          sd = p[1]))) %>% 
+        group_by(trial, situation) %>% 
+        summarize(posterior_rationality = prod(likelihood_rationality),
+                  posterior_pivotality = prod(likelihood_pivotality),
+                  posterior_full = prod(likelihood_full)) %>% 
+        group_by(trial) %>% 
+        mutate(posterior_rationality = posterior_rationality / sum(posterior_rationality),
+               posterior_pivotality = posterior_pivotality / sum(posterior_pivotality),
+               posterior_full = posterior_full / sum(posterior_full)) %>% 
+        ungroup()
+    
+    # integrate with human 
+    df.exp3c.aggregate = df.exp3c.aggregate %>%
+        left_join(df.exp3c.possibilities %>% 
+                      select(trial, situation, trees,
+                             contains("strength"), contains("choice")) %>% 
+                      distinct() %>%
+                      left_join(df.exp3c.posteriors,
+                                by = c("trial", "situation")) %>% 
+                      pivot_longer(cols = c(trees, 
+                                            contains("strength"), 
+                                            contains("choice")),
+                                   names_to = "question",
+                                   values_to = "choice",
+                                   values_transform = list(choice = as.character)) %>% 
+                      relocate(question, choice, .after = situation),
+                  by = join_by(trial, question, choice)) %>% 
+        group_by(trial, question, choice, n, people) %>% 
+        summarize(across(contains("posterior"), .fns = ~ sum(.))) %>% 
+        ungroup()
+    
+    # add softmax
+    df.exp3c.aggregate = df.exp3c.aggregate %>%
+        group_by(trial, question) %>%
+        mutate(posterior_rationality_softmax = fun.softmax(posterior_rationality,
+                                                       beta = p[2]),
+               posterior_pivotality_softmax = fun.softmax(posterior_pivotality,
+                                                      beta = p[2]),
+               posterior_full_softmax = fun.softmax(posterior_full,
+                                                   beta = p[2])) %>%
+        ungroup()
+    
+    # compare to human data 
+    loss = df.exp3c.aggregate %>% 
+        mutate(rationality_sse = (people - posterior_rationality_softmax)^2,
+               pivotality_sse = (people - posterior_pivotality_softmax)^2,
+               full_sse = (people - posterior_full_softmax)^2,
+               total_sse = rationality_sse + pivotality_sse + full_sse) %>% 
+        pull(total_sse) %>% 
+        sum(.)
+    
+    return(loss)
+}
+ 
+params = optim(par = c(0.1, 3), 
+               fn = fun.fit.exp3c)
+
+# best fitting values 
+# p.sd = 0.3365993 
+# p.beta = 1.2038573
+
+```
+
+#### Model predictions by trial
+
+```{r, message=F}
+# best fitting values 
+# p.sd = 0.3365993 
+# p.beta = 1.2038573
+p.sd = params$par[1]
+p.beta = params$par[2]
+
+df.exp3c.posteriors = df.exp3c.possibilities %>%
+    mutate(likelihood_rationality = map2_dbl(.x = rationality, 
+                                             .y = blame, 
+                                             .f = ~ dnorm(.x,
+                                                          mean = .y,
+                                                          sd = p.sd)),
+           likelihood_pivotality = map2_dbl(.x = pivotality, 
+                                            .y = blame, 
+                                            .f = ~ dnorm(.x,
+                                                         mean = .y,
+                                                         sd = p.sd)),
+           likelihood_full = map2_dbl(.x = full, 
+                                         .y = blame, 
+                                         .f = ~ dnorm(.x,
+                                                      mean = .y,
+                                                      sd = p.sd))) %>% 
+    group_by(trial, situation) %>% 
+    summarize(posterior_rationality = prod(likelihood_rationality),
+              posterior_pivotality = prod(likelihood_pivotality),
+              posterior_full = prod(likelihood_full)) %>% 
+    group_by(trial) %>% 
+    mutate(posterior_rationality = posterior_rationality / sum(posterior_rationality),
+           posterior_pivotality = posterior_pivotality / sum(posterior_pivotality),
+           posterior_full = posterior_full / sum(posterior_full)) %>% 
+    ungroup()
+
+# integrate with human 
+df.exp3c.aggregate = df.exp3c.aggregate %>%
+    left_join(df.exp3c.possibilities %>% 
+                  select(trial, situation, trees,
+                         contains("strength"), contains("choice")) %>% 
+                  distinct() %>%
+                  left_join(df.exp3c.posteriors,
+                            by = c("trial", "situation")) %>% 
+                  pivot_longer(cols = c(trees, contains("strength"), contains("choice")),
+                               names_to = "question",
+                               values_to = "choice",
+                               values_transform = list(choice = as.character)) %>% 
+                  relocate(question, choice, .after = situation),
+              by = join_by(trial, question, choice)) %>% 
+    group_by(trial, question, choice, n, people) %>% 
+    summarize(across(contains("posterior"), .fns = ~ sum(.))) %>% 
+    ungroup()
+
+# add softmax
+df.exp3c.aggregate = df.exp3c.aggregate %>%
+    group_by(trial, question) %>%
+    mutate(posterior_rationality_softmax = fun.softmax(posterior_rationality,
+                                                       beta = p.beta),
+           posterior_pivotality_softmax = fun.softmax(posterior_pivotality,
+                                                      beta = p.beta),
+           posterior_full_softmax = fun.softmax(posterior_full,
+                                                beta = p.beta)) %>%
+    ungroup()
+
+```
+
+#### Correlation matrix
+
+```{r, warning=FALSE, message=FALSE}
+df.exp3c.aggregate %>%
+    select(people, contains("softmax")) %>%
+    rename_with(~ str_remove(., "posterior_")) %>%
+    rename_with(~ str_remove(., "_softmax")) %>%
+    correlate() %>%
+    shave() %>%
+    fashion() %>%
+    fun.print_table()
+```
+
+### PLOTS
+
+#### Selection of trials
+
+```{r fig.height=13, fig.width=20, warning=FALSE}
+trials = c(1, 3, 25, 9, 11, 34, 19, 18)
+labels = 1:8
+
+df.plot = df.exp3c.aggregate %>%
+    left_join(df.exp3c.confidence) %>% 
+    relocate(low, high, .after = people) %>% 
+    mutate(choice = str_replace(choice, "trees", "T"),
+           choice = str_replace(choice, "fish", "F"),
+           item = str_c(question, choice),
+           item = str_replace(item, "trees", "t"),
+           item = str_remove(item, "_strength"),
+           item = str_remove(item, "_choice"),
+           question_type = str_extract(question, "trees|strength|choice")) %>%
+    filter(trial %in% trials) %>%
+    mutate(trial = factor(trial,
+                          levels = trials,
+                          labels = str_c("trial ", labels))) %>% 
+    select(trial:high, item, question_type,
+           rationality = posterior_rationality_softmax,
+           pivotality = posterior_pivotality_softmax,
+           full = posterior_full_softmax) %>% 
+    pivot_longer(cols = c(people, rationality, pivotality, full),
+                 names_to = "index",
+                 values_to = "value")
+
+fun.load_image = function(situation){
+  readPNG(str_c("../../figures/stimuli/experiment3c/images/experiment3c_trial_",
+                situation, ".png"))
+}
+
+# linking images and clips
+df.trials = df.plot %>%
+  distinct(trial) %>%
+  arrange(trial) %>%
+  mutate(number = trials,
+         grob = map(.x = number, .f = ~ fun.load_image(situation = .x)),
+         label = str_c("trial ", number))
+
+df.text = df.trials %>%
+    distinct(trial) %>% 
+    mutate(index = 1:8)
+
+# plotting
+ggplot(data = df.plot,
+       mapping = aes(x = item,
+                     y = value)) +
+    geom_col(data = df.plot %>%
+                 filter(index == "people"),
+             mapping = aes(fill = question_type,
+                           linetype = question_type),
+             alpha = 0.5,
+             color = "black") +
+    geom_linerange(mapping = aes(ymin = low,
+                                 ymax = high),
+                   size = 1.5) +
+    geom_point(data = df.plot %>%
+                   filter(index %in% c("rationality",
+                                       "pivotality",
+                                       "full")) %>%
+                   mutate(index = factor(index, levels = c("rationality",
+                                                           "pivotality",
+                                                           "full"))),
+               mapping = aes(shape = index,
+                             fill = index),
+               position = position_dodge(width = 0.8),
+               color = "black",
+               stroke = 1,
+               size = 4) +
+    geom_custom(data = df.trials,
+                mapping = aes(data = grob,
+                              x = -Inf,
+                              y = Inf),
+                grob_fun = function(x) rasterGrob(x,
+                                                  interpolate = T,
+                                                  vjust = 0,
+                                                  hjust = 0)) +
+    geom_text(data = df.text,
+              mapping = aes(x = -Inf,
+                            y = Inf,
+                            label = index),
+              size = 14,
+              hjust = -0.5,
+              vjust = -0.25,
+              color = "white") +
+    facet_wrap(~trial,
+               labeller = labeller(label),
+               scales = "free_x",
+               nrow = 2) +
+    labs(y = "% percent selected",
+         linetype = "question",
+         shape = "model") +
+    coord_cartesian(clip = "off",
+                    ylim = c(0, 1)) +
+    scale_y_continuous(breaks = seq(0, 1, 0.25),
+                       labels = str_c(seq(0, 100, 25), "%"),
+                       limits = c(0, 1),
+                       expand = c(0, 0)) +
+    scale_shape_manual(values = c(21, 23, 24)) +
+    scale_linetype_manual(values = rep(1, 3)) +
+    scale_fill_manual(breaks = c("choice", "strength", "trees",
+                                 "rationality", "pivotality"),
+                      values = c(choice = "#80b4ee",
+                                 strength = "gray80",
+                                 trees = "darkgreen",
+                                 rationality = "blue",
+                                 pivotality = "red",
+                                 full = "purple")) +
+    theme(legend.position = "bottom",
+          legend.title = element_text(size = 30),
+          legend.text = element_text(size = 25),
+          panel.grid.major.y = element_line(),
+          axis.text.y = element_text(size = 25),
+          axis.title.y = element_text(size = 30),
+          axis.text.x = element_text(size = 25),
+          axis.title.x = element_blank(),
+          strip.background = element_blank(),
+          panel.background = element_blank(),
+          strip.text = element_blank(),
+          panel.spacing.x = unit(1, "cm"),
+          panel.spacing.y = unit(7, "cm"),
+          plot.margin = margin(t = 6.5, l = 0.2, r = 0.2, b = 0.1, unit = "cm")
+    ) +
+    guides(fill = F,
+           linetype = guide_legend(override.aes = list(fill = c("#80b4ee",
+                                                                "gray80",
+                                                                "darkgreen"))),
+           shape = guide_legend(override.aes = list(fill = c("blue",
+                                                             "red",
+                                                             "purple"),
+                                                    size = 8)))
+
+ggsave("../../figures/paper/figure13.pdf",
+       width = 20,
+       height = 13)
+```
+
+#### Scatter plots
+
+```{r fig.height=6, fig.width=21, message=FALSE, warning=FALSE}
+
+df.plot = df.exp3c.aggregate %>%
+    left_join(df.exp3c.confidence) %>% 
+    relocate(low, high, .after = people) %>% 
+    select(trial, question, choice, people, low, high,
+           rationality = posterior_rationality_softmax,
+           pivotality = posterior_pivotality_softmax,
+           full = posterior_full_softmax) %>%
+    mutate(question_type = str_extract(question, "trees|strength|choice"))
+
+df.models = tibble(name = c("rationality", "pivotality", "full"),
+                   color = c("blue", "red", "purple"))
+
+fun.scatter = function(df_plot, df_models, index){
+    p = ggplot(data = df_plot,
+               mapping = aes(x = .data[[df_models$name[index]]],
+                             y = people)) +
+        geom_abline(intercept = 0,
+                    slope = 1,
+                    color = "black",
+                    linetype = "dashed") +
+        geom_smooth(method = "lm",
+                    mapping = aes(group = 1),
+                    fill = df_models$color[index],
+                    color = df_models$color[index],
+                    alpha = 0.1,
+                    show.legend = F) +
+        geom_linerange(mapping = aes(ymin = low,
+                                     ymax = high),
+                       alpha = 0.2,
+                       color = "black",
+                       size = 1) +
+        geom_point(mapping = aes(fill = question_type),
+                   size = 2.5,
+                   shape = 21) +
+        annotate(geom = "text",
+                 label = df_plot %>%
+                     summarise(r = cor(people, .data[[df_models$name[index]]]),
+                               rmse = fun.rmse(people, .data[[df_models$name[index]]])) %>%
+                     mutate(across(.fns = ~ round(., 2))) %>%
+                     unlist() %>%
+                     str_c(names(.), " = ", .),
+                 x = c(0, 0),
+                 y = c(1, 0.92),
+                 size = 7,
+                 hjust = 0) +
+        scale_x_continuous(breaks = seq(0, 1, 0.25),
+                           labels = scales::label_percent(),
+                           limits = c(0, 1)) +
+        scale_y_continuous(breaks = seq(0, 1, 0.25),
+                           labels = scales::label_percent(),
+                           limits = c(0, 1)) +
+        scale_fill_manual(values = c("#80b4ee", "gray80", "darkgreen")) +
+        labs(x = str_c(df_models$name[index], " model"),
+             y = "% percent selected",
+             fill = "question") +
+        theme(legend.position = "none",
+              axis.title.x = element_markdown(color = df_models$color[index]))
+    
+    # add legend to first plot
+    if (index == 1){
+        p = p +
+            theme(legend.position = c(1, 0),
+                  legend.justification = c(1, -0.1)) +
+            guides(fill = guide_legend(override.aes = list(size = 6)))
+    }
+    else{
+        p = p + 
+            theme(axis.title.y = element_blank())
+    }
+    return(p)
+}
+
+l.plots = map(.x = 1:3, ~ fun.scatter(df.plot, df.models, .x))
+
+wrap_plots(l.plots,
+           ncol = 3) +
+  plot_annotation(tag_levels = "A") & 
+    theme(plot.tag = element_text(face = "bold"))
+
+ggsave("../../figures/paper/figure14.pdf",
+       width = 21,
+       height = 6)
+```
+
+
+
+### TABLES
+
+#### Trial information
+
+```{r}
+df.exp3c.trialinfo %>% 
+    mutate(across(everything(), ~ as.character(.)),
+           across(contains("choice"), ~ ifelse(. == "fish", "F", "T")),
+           across(everything(), ~ replace_na(., "--"))) %>%
+    fun.print_table()
+```
+
+# Session info
+
+```{r, echo=F}
+sessionInfo()
+```

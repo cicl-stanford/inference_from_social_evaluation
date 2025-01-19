@@ -1,0 +1,54 @@
+<html>
+<script>
+function validateForm()
+{
+var q1=document.forms["ControlForm"]["q1"].value;
+var q2=document.forms["ControlForm"]["q2"].value;
+var q3=document.forms["ControlForm"]["q3"].value;
+var q4=document.forms["ControlForm"]["q4"].value;
+var q5=document.forms["ControlForm"]["q5"].value;
+var q6=document.forms["ControlForm"]["q6"].value;
+if (q1==null || q1=="" || q2==null || q2=="" || q3==null || q3=="" || q4==null || q4=="" || q5==null || q5=="" || q6==null || q6=="")
+  {
+  alert("Please respond all questions before moving on.");
+  return false;
+  }
+if (q3=="i" || q4=="i" || q5=="i" || q6=="i" || q1!="5" || q2!="2")
+  {
+  alert("Oops! You got some questions wrong!\nPlease read the instructions again.");
+  window.location="http://krallen.scripts.mit.edu/Responsibility/index.php";
+  return false;
+  }
+}
+</script>
+<body>
+<center>Please answer the following questions carefully.<br>If you respond incorrectly you'll be asked to read the instructions again.</center>
+
+<form name="ControlForm" action="begin.php" onsubmit="return validateForm()" method="post">
+
+1. If fisherman B has strength 5, how many trees can he move in a day? <input type="text" name="q1"><br><br>
+2. If fisherman C has strength 2, how many sacks of fish can he bring in a day? <input type="text" name="q2"><br><br>
+3. When the fishermen wake up, do they decide together who's fishing and who's clearing the road?<br>
+<select size="2" name="q3" multiple="">
+<option value="i">They decide together</option>
+<option value="c">They decide individually</option>
+</select><br><br> 
+4. Once each fisherman decides what to do, can they change their mind later in the day?<br>
+<select size="2" name="q4" multiple="">
+<option value="i">Yes, they can switch between tasks as much as they want.</option>
+<option value="c">No, each task takes up the whole day.</option>
+</select><br><br> 
+5. Does each fisherman know the strength of the other fishermen?<br>
+<select size="2" name="q5" multiple="">
+<option value="c">Yes.</option>
+<option value="i">No.</option>
+</select><br><br>
+6. Can all fishermen see how many trees are blocking the road?<br>
+<select size="2" name="q6" multiple="">
+<option value="c">Yes.</option>
+<option value="i">No.</option>
+</select><br><br>
+<input type="submit" value="Continue">
+</form>
+</body>
+</html>
